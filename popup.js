@@ -143,6 +143,9 @@ startScanBtn.addEventListener('click', async () => {
 
     discoveredCameras = cameras;
 
+    console.log('🎯 SCAN COMPLETE - Cameras found:', cameras.length);
+    console.log('🎯 Camera data:', JSON.stringify(cameras, null, 2));
+
     if (cameras.length === 0) {
       alert('No cameras found. Please check your network range and credentials.');
       progressSection.style.display = 'none';
@@ -152,7 +155,9 @@ startScanBtn.addEventListener('click', async () => {
 
     // Move to selection step
     progressSection.style.display = 'none';
+    console.log('🎯 Calling displayCameras with', cameras.length, 'cameras');
     displayCameras(cameras);
+    console.log('🎯 Calling goToStep(2)');
     goToStep(2);
   } catch (error) {
     alert(`Scan failed: ${error.message}`);
@@ -164,8 +169,14 @@ startScanBtn.addEventListener('click', async () => {
 
 // Step 2: Display and Select Cameras
 function displayCameras(cameras) {
+  console.log('🎯 displayCameras called with:', cameras);
+  console.log('🎯 cameraList element:', cameraList);
+  console.log('🎯 cameraCount element:', cameraCount);
+
   cameraCount.textContent = cameras.length;
   cameraList.innerHTML = '';
+
+  console.log('🎯 Set camera count to:', cameras.length);
 
   cameras.forEach(camera => {
     const card = document.createElement('div');
