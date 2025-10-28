@@ -27,27 +27,46 @@ npm run dev
 
 **CRITICAL**: The extension loads from the root directory, NOT from `dist/`. The manifest.json in the root references scripts in `dist/`.
 
-## Native Messaging Host Setup
+## Proxy Server Architecture (CRITICAL)
 
-The extension requires a native messaging host for HTTPS camera authentication (bypasses self-signed certificate issues).
+**THE SOLUTION TO CHROME SANDBOX RESTRICTIONS**:
 
-```bash
-# Install native messaging host (macOS only)
-./install.sh
+Chrome's sandbox prevents native messaging hosts from accessing local network devices. The working solution uses a **two-tier proxy architecture**:
 
-# Verify installation
-ls ~/Library/Application\ Support/Anava/camera-proxy
-cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.anava.camera_proxy.json
-
-# Check logs
-tail -f ~/Library/Logs/anava-camera-proxy.log
+```
+Chrome Extension (sandboxed)
+  ↓ Native Messaging (stdio)
+Native Host (sandboxed, localhost-only)
+  ↓ HTTP (127.0.0.1:9876/proxy)
+Proxy Server (user-launched, full network access)
+  ↓ HTTPS + Digest Auth
+Camera (192.168.x.x)
 ```
 
-**Why Native Host is Required**:
-- Chrome blocks HTTPS requests to self-signed certificates
-- Background service worker shows NET::ERR_CERT_AUTHORITY_INVALID
-- Native host (Go binary) bypasses browser TLS validation
-- Falls back to background worker if native host unavailable
+### Setup Commands
+
+```bash
+# ONE-TIME INSTALL (builds both binaries + sets up LaunchAgent)
+./install-proxy.sh
+
+# Manual control (if needed)
+./start-proxy.sh   # Start proxy server
+./stop-proxy.sh    # Stop proxy server
+
+# Verify running
+curl http://127.0.0.1:9876/health   # Should return {"status":"ok"}
+ps aux | grep camera-proxy-server   # Check process
+
+# Check logs
+tail -f ~/Library/Logs/anava-camera-proxy-server.log  # Proxy server
+tail -f ~/Library/Logs/anava-native-host.log          # Native messaging host
+```
+
+### Why This Architecture?
+
+**Chrome Sandbox Limitation**: Native messaging hosts launched by Chrome CANNOT access local network (192.168.x.x), even though they can reach public internet (httpbin.org).
+
+**Solution**: Proxy server runs as user-launched process (via LaunchAgent), which has full network access. Native host connects to localhost:9876, which is allowed by Chrome.
 
 ## Architecture
 
@@ -68,26 +87,39 @@ tail -f ~/Library/Logs/anava-camera-proxy.log
 - `src/services/AdaptiveScanConfig.ts` - Dynamic batch sizing based on network performance
 - `src/types/Camera.ts` - Camera interfaces + device type detection
 
-### Authentication Architecture
+### Authentication Pattern (CRITICAL - Ported from Electron)
 
-**Dual-mode authentication** (with automatic fallback):
+**Source**: `/Users/ryanwager/anava-infrastructure-deployer/src/main/services/camera/cameraAuthentication.ts`
 
+The proxy server (`proxy-server/main.go`) implements the EXACT authentication pattern from the Electron app:
+
+**Step 1**: ONE unauthenticated request first (3s timeout)
+```go
+// Fast test - if timeout/refused, not a camera
+resp, err := tryUnauthenticatedRequest(req)
+if isTimeoutError(err) || isConnectionRefusedError(err) {
+    return error  // Fail fast - saves 10-18x time vs trying auth
+}
 ```
-1. Try native messaging host (preferred)
-   ├─ Bypasses browser TLS validation
-   ├─ No certificate errors
-   └─ Direct Go → camera HTTP requests
 
-2. Fallback to background service worker
-   ├─ Uses fetch() with self-signed cert warnings
-   ├─ May show NET::ERR_CERT_AUTHORITY_INVALID
-   └─ HTTP Digest auth implementation in JavaScript
+**Step 2**: Protocol-based auth ONLY if 401 received
+```go
+if resp.Status == 401 {
+    if protocol == "https" {
+        // HTTPS: Try Basic first, then Digest
+        tryBasicAuth() -> tryDigestAuth()
+    } else {
+        // HTTP: Try Digest first, then Basic
+        tryDigestAuth() -> tryBasicAuth()
+    }
+}
 ```
 
-**Implementation**: `src/services/CameraAuthentication.ts`
-- `isNativeHostAvailable()` - Checks for native host
-- `makeNativeRequest()` - Native messaging communication
-- `testSinglePortAuthBackground()` - Fallback method
+**CRITICAL FIX**: Digest auth must send JSON body in BOTH requests:
+1. Challenge request (to get WWW-Authenticate header)
+2. Authenticated request (with Authorization header + **body**)
+
+Missing body in step 2 caused "JSON syntax error" from camera.
 
 ### UI Flow (popup.js)
 
@@ -97,23 +129,38 @@ Single-page flow with 4 steps:
 3. **Configure** - Enter license key + Firebase/Gemini config
 4. **Deploy** - Upload ACAP + activate + configure
 
-### Native Host (Go Binary)
+### Components
 
-**Location**: `native-host/main.go`
+**1. Proxy Server** (`proxy-server/main.go`)
+- User-launched process with full network access
+- Listens on `127.0.0.1:9876/proxy`
+- Implements exact Electron authentication pattern
+- Handles self-signed certificates with `InsecureSkipVerify`
 
-**Purpose**: Proxy for HTTPS requests with self-signed certificates
-- Accepts messages via Chrome Native Messaging (stdio)
-- Makes HTTP/HTTPS requests with custom TLS config
-- Returns status + response data to extension
+**2. Native Messaging Host** (`native-host-proxy/main.go`)
+- Chrome-launched, sandboxed (localhost-only)
+- Forwards requests to proxy server via HTTP
+- Simple passthrough - no auth logic
 
-**Message Format**:
+**3. Extension** (`src/services/CameraAuthentication.ts`)
+- Sends requests via Native Messaging
+- Parses device info from responses
+- Filters by device type (cameras only)
+
+**Message Format** (Chrome → Native Host → Proxy):
 ```json
 {
-  "url": "https://192.168.50.156/axis-cgi/basicdeviceinfo.cgi",
+  "url": "https://192.168.50.156:443/axis-cgi/basicdeviceinfo.cgi",
   "method": "POST",
   "username": "anava",
   "password": "baton",
-  "body": { ... }
+  "body": {
+    "apiVersion": "1.0",
+    "method": "getProperties",
+    "params": {
+      "propertyList": ["Brand", "ProdType", "ProdNbr", "ProdFullName", "SerialNumber"]
+    }
+  }
 }
 ```
 
@@ -263,24 +310,28 @@ Or use "Debug: Test .156" button in UI.
 
 ```
 anava-camera-extension/
-├── manifest.json              # Chrome extension manifest v3
-├── package.json               # NPM scripts + dependencies
-├── tsconfig.json              # TypeScript configuration
-├── popup.html/css/js          # Extension UI
-├── background.js              # Service worker (auth handling)
-├── install.sh                 # Native host installer (macOS)
+├── manifest.json                    # Chrome extension manifest v3
+├── package.json                     # NPM scripts + dependencies
+├── tsconfig.json                    # TypeScript configuration
+├── popup.html/css/js                # Extension UI
+├── background.js                    # Service worker
+├── install-proxy.sh                 # ONE-TIME INSTALL (recommended)
+├── start-proxy.sh / stop-proxy.sh   # Manual proxy control
 ├── src/
 │   ├── services/
-│   │   ├── CameraAuthentication.ts   # Dual-mode auth
-│   │   ├── CameraDiscovery.ts        # TCP scanning + VAPIX
-│   │   ├── AdaptiveScanConfig.ts     # Dynamic batch sizing
-│   │   └── AcapDeploymentService.ts  # ACAP deployment (WIP)
+│   │   ├── CameraAuthentication.ts  # Native messaging client
+│   │   ├── CameraDiscovery.ts       # TCP scanning + VAPIX
+│   │   ├── AdaptiveScanConfig.ts    # Dynamic batch sizing
+│   │   └── AcapDeploymentService.ts # ACAP deployment (WIP)
 │   └── types/
-│       └── Camera.ts                  # Camera interfaces
-├── native-host/
-│   ├── main.go                # Native messaging host (Go)
-│   └── go.mod                 # Go dependencies
-└── dist/                      # Build output (git ignored)
+│       └── Camera.ts                # Camera interfaces + device type detection
+├── proxy-server/
+│   ├── main.go                      # LOCAL PROXY (full network access)
+│   └── go.mod                       # Go dependencies
+├── native-host-proxy/
+│   ├── main.go                      # CHROME NATIVE HOST (localhost-only)
+│   └── (no go.mod - single file)
+└── dist/                            # Build output (git ignored)
 ```
 
 ## Extension Loading
@@ -291,9 +342,41 @@ anava-camera-extension/
 - TypeScript source in `src/` is compiled to `dist/`
 - Static files (HTML/CSS/background.js) are copied to `dist/`
 
+## Key Learnings (For Future Sessions)
+
+### 1. Chrome Sandbox Restriction
+- Native messaging hosts launched by Chrome CANNOT access local network (192.168.x.x)
+- They CAN access public internet (httpbin.org)
+- Solution: User-launched proxy server on localhost
+
+### 2. Authentication Pattern Must Match Electron EXACTLY
+- Source: `/Users/ryanwager/anava-infrastructure-deployer/src/main/services/camera/cameraAuthentication.ts`
+- Step 1: ONE unauthenticated request (3s timeout) - fail fast if no response
+- Step 2: Protocol-based auth only if 401 (HTTPS→Basic first, HTTP→Digest first)
+- Performance: 10-18x faster than trying all auth methods on every IP
+
+### 3. Digest Auth Body Handling
+- **CRITICAL**: Must send JSON body in BOTH challenge AND authenticated requests
+- Challenge request gets WWW-Authenticate header
+- Authenticated request must include same body + Authorization header
+- Missing body causes "JSON syntax error" from camera
+
+### 4. Device Type Detection
+- Parse `ProdNbr` field from camera response (e.g., "M3215-LVE")
+- First letter determines type: M/P/Q=camera, C=speaker, I=intercom, A=access-control
+- Filter non-cameras before returning results
+
+### 5. Testing
+```bash
+# Test proxy directly
+curl -X POST http://127.0.0.1:9876/proxy -H "Content-Type: application/json" \
+  -d '{"url":"https://192.168.50.156:443/axis-cgi/basicdeviceinfo.cgi","method":"POST","username":"anava","password":"baton","body":{"apiVersion":"1.0","method":"getProperties","params":{"propertyList":["Brand","ProdType","ProdNbr","ProdFullName","SerialNumber"]}}}'
+
+# Should return HTTP 200 with camera details, NOT "JSON syntax error"
+```
+
 ## Next Development Tasks
 
-See README.md TODO section for:
 - Complete ACAP deployment implementation
 - License activation flow
 - Camera configuration (Firebase + Gemini config push)
