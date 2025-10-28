@@ -49,6 +49,8 @@ const finishDeployBtn = document.getElementById('finish-deploy');
 function goToStep(step) {
   currentStep = step;
 
+  console.log('🎯 goToStep called with step:', step);
+
   // Update step indicators
   document.querySelectorAll('.step').forEach((el, i) => {
     el.classList.remove('active', 'completed');
@@ -59,10 +61,20 @@ function goToStep(step) {
     }
   });
 
-  // Show/hide step sections
+  // Show/hide step sections (MUST set style.display, not just CSS class)
   [stepScan, stepSelect, stepConfigure, stepDeploy].forEach((section, i) => {
-    section.classList.toggle('active', i + 1 === step);
+    if (i + 1 === step) {
+      section.style.display = 'block';
+      section.classList.add('active');
+      console.log('🎯 Showing section:', section.id);
+    } else {
+      section.style.display = 'none';
+      section.classList.remove('active');
+    }
   });
+
+  console.log('🎯 goToStep complete. Current visible section:',
+    [stepScan, stepSelect, stepConfigure, stepDeploy].find(s => s.style.display === 'block')?.id);
 }
 
 // DEBUG: Test single IP

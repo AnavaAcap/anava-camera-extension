@@ -129,6 +129,8 @@ Single-page flow with 4 steps:
 3. **Configure** - Enter license key + Firebase/Gemini config
 4. **Deploy** - Upload ACAP + activate + configure
 
+**CRITICAL UI FIX**: Inline `style="display: none;"` in HTML overrides CSS classes. The `goToStep()` function MUST explicitly set `style.display = 'block'` or `'none'` instead of relying on CSS `.active` class. CSS specificity fails when inline styles are present.
+
 ### Components
 
 **1. Proxy Server** (`proxy-server/main.go`)
