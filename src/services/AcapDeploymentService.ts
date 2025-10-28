@@ -24,8 +24,16 @@ import { authenticateCamera } from './CameraAuthentication.js';
 export interface AcapManifest {
   version: string;
   appName: string;
-  releaseDate: string;
-  files: AcapFile[];
+  released?: string;
+  files: {
+    [key: string]: {
+      url: string;
+      size: number;
+      arch: 'armv7hf' | 'aarch64';
+      os: 'OS11' | 'OS12';
+      filename: string;
+    };
+  };
 }
 
 export interface AcapFile {
@@ -34,7 +42,7 @@ export interface AcapFile {
   architecture: 'armv7hf' | 'aarch64';
   url: string;
   size: number;
-  checksum: string;
+  filename: string;
 }
 
 /**
@@ -117,19 +125,31 @@ export class AcapDeploymentService {
       const firmwareInfo = await this.getFirmwareInfo(camera);
       console.log('[AcapDeploy] Firmware info:', firmwareInfo);
 
-      // Find matching ACAP file
-      const acapFile = manifest.files.find(file =>
+      // Convert manifest files object to array and find matching file
+      const filesArray = Object.values(manifest.files);
+      const matchingFile = filesArray.find(file =>
         file.os === firmwareInfo.os &&
-        file.architecture === firmwareInfo.architecture
+        file.arch === firmwareInfo.architecture
       );
 
-      if (!acapFile) {
+      if (!matchingFile) {
         throw new Error(
           `No ACAP variant found for ${firmwareInfo.os} / ${firmwareInfo.architecture}`
         );
       }
 
-      console.log('[AcapDeploy] Selected ACAP:', acapFile.name);
+      console.log('[AcapDeploy] Selected ACAP:', matchingFile.filename);
+
+      // Convert to AcapFile format
+      const acapFile: AcapFile = {
+        name: matchingFile.filename,
+        os: matchingFile.os,
+        architecture: matchingFile.arch,
+        url: matchingFile.url,
+        size: matchingFile.size,
+        filename: matchingFile.filename
+      };
+
       return acapFile;
     } catch (error: any) {
       console.error('[AcapDeploy] Error selecting ACAP:', error);
