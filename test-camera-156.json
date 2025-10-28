@@ -1,0 +1,13 @@
+{
+  "url": "https://192.168.50.156:443/axis-cgi/basicdeviceinfo.cgi",
+  "method": "POST",
+  "username": "anava",
+  "password": "baton",
+  "body": {
+    "apiVersion": "1.0",
+    "method": "getProperties",
+    "params": {
+      "propertyList": ["Brand", "ProdType", "ProdNbr", "ProdFullName", "SerialNumber"]
+    }
+  }
+}

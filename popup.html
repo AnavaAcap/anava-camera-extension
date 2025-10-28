@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anava Camera Deployment</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Anava Camera Deployment</h1>
+    </header>
+
+    <!-- Progress Steps Indicator -->
+    <div class="steps-indicator">
+      <div class="step active" data-step="1">
+        <div class="step-number">1</div>
+        <div class="step-label">Scan</div>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="2">
+        <div class="step-number">2</div>
+        <div class="step-label">Select</div>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="3">
+        <div class="step-number">3</div>
+        <div class="step-label">Configure</div>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="4">
+        <div class="step-number">4</div>
+        <div class="step-label">Deploy</div>
+      </div>
+    </div>
+
+    <!-- Step 1: Network Scan -->
+    <section id="step-scan" class="step-section active">
+      <h2>Step 1: Scan Network</h2>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="network-range">Network Range</label>
+          <input type="text" id="network-range" placeholder="192.168.50.0/24" value="192.168.50.0/24">
+        </div>
+        <div class="form-group">
+          <label for="intensity">Intensity</label>
+          <select id="intensity">
+            <option value="aggressive" selected>Fast</option>
+            <option value="balanced">Balanced</option>
+            <option value="conservative">Thorough</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" placeholder="root" value="anava">
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" value="baton">
+        </div>
+      </div>
+
+      <button id="start-scan" class="btn btn-primary">Start Scan</button>
+      <button id="test-single-ip" class="btn btn-secondary" style="margin-left: 10px;">DEBUG: Test .156 Only</button>
+
+      <!-- Progress Section -->
+      <div id="progress-section" style="display: none;">
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="progress-text" class="progress-text"></p>
+      </div>
+    </section>
+
+    <!-- Step 2: Select Cameras -->
+    <section id="step-select" class="step-section" style="display: none;">
+      <h2>Step 2: Select Cameras (<span id="camera-count">0</span> found)</h2>
+      <div id="camera-list" class="camera-list"></div>
+      <button id="continue-configure" class="btn btn-primary" disabled>Continue to Configuration</button>
+    </section>
+
+    <!-- Step 3: Configure Deployment -->
+    <section id="step-configure" class="step-section" style="display: none;">
+      <h2>Step 3: Configure Deployment</h2>
+
+      <div class="selected-info">
+        Selected: <span id="selected-count">0</span> camera(s)
+      </div>
+
+      <div class="form-group">
+        <label for="license-key">License Key *</label>
+        <input type="text" id="license-key" placeholder="Anava license key">
+      </div>
+
+      <div class="form-group">
+        <label for="customer-id">Customer ID *</label>
+        <input type="text" id="customer-id" placeholder="e.g., netflix">
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="firebase-config">Firebase Config (JSON) *</label>
+          <textarea id="firebase-config" rows="4" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"...","databaseId":"(default)"}'></textarea>
+        </div>
+        <div class="form-group">
+          <label for="gemini-config">Gemini Config (JSON) *</label>
+          <textarea id="gemini-config" rows="4" placeholder='{"vertexApiGatewayUrl":"...","vertexApiGatewayKey":"...","vertexGcpProjectId":"...","vertexGcpRegion":"us-central1","vertexGcsBucketName":"..."}'></textarea>
+        </div>
+      </div>
+
+      <div class="button-row">
+        <button id="back-to-select" class="btn btn-secondary">Back</button>
+        <button id="start-deploy" class="btn btn-primary" disabled>Start Deployment</button>
+      </div>
+    </section>
+
+    <!-- Step 4: Deployment Progress -->
+    <section id="step-deploy" class="step-section" style="display: none;">
+      <h2>Step 4: Deploying to Cameras</h2>
+      <div id="deploy-status" class="deploy-status"></div>
+      <button id="finish-deploy" class="btn btn-primary" style="display: none;">Finish</button>
+    </section>
+
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Anava Camera Discovery & Deployment",
+  "version": "1.0.0",
+  "description": "Discover Axis cameras on local network and deploy ACAP applications",
+  "permissions": [
+    "storage",
+    "tabs",
+    "alarms",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
