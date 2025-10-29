@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -116,6 +117,18 @@ func (cs *CertificateStore) SetFingerprint(host, fingerprint string) {
 func calculateCertFingerprint(cert *x509.Certificate) string {
 	hash := sha256.Sum256(cert.Raw)
 	return hex.EncodeToString(hash[:])
+}
+
+// generateSecureNonce generates cryptographically secure random nonce
+// Returns 16 bytes (32 hex characters) of random data
+func generateSecureNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based if crypto/rand fails (unlikely)
+		logger.Printf("Warning: crypto/rand failed, using fallback nonce")
+		return fmt.Sprintf("%d%d", time.Now().UnixNano(), time.Now().Unix())
+	}
+	return hex.EncodeToString(b)
 }
 
 // sanitizeCredential redacts sensitive credential information for logging
@@ -646,12 +659,14 @@ func calculateDigestAuth(req *ProxyRequest, challenge *DigestChallenge) string {
 	ha1 := md5Hash(fmt.Sprintf("%s:%s:%s", req.Username, challenge.Realm, req.Password))
 	ha2 := md5Hash(fmt.Sprintf("%s:%s", req.Method, uri))
 
+	// SECURITY: Generate secure random client nonce
+	cnonce := generateSecureNonce()
+	nc := "00000001" // Nonce count - could be incremented for multiple requests
+
 	var response string
 	if challenge.Qop == "" {
 		response = md5Hash(fmt.Sprintf("%s:%s:%s", ha1, challenge.Nonce, ha2))
 	} else {
-		nc := "00000001"
-		cnonce := "0a4f113b"
 		response = md5Hash(fmt.Sprintf("%s:%s:%s:%s:%s:%s", ha1, challenge.Nonce, nc, cnonce, challenge.Qop, ha2))
 	}
 
@@ -667,8 +682,6 @@ func calculateDigestAuth(req *ProxyRequest, challenge *DigestChallenge) string {
 	}
 
 	if challenge.Qop != "" {
-		nc := "00000001"
-		cnonce := "0a4f113b"
 		auth += fmt.Sprintf(`, qop=%s, nc=%s, cnonce="%s"`, challenge.Qop, nc, cnonce)
 	}
 

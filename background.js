@@ -218,7 +218,10 @@ async function performDigestAuth(url, username, password, body, wwwAuthHeader) {
   console.log('🔐 [Background] Digest params:', { realm, qop: qop || 'none', nonce: nonce.substring(0, 16) + '...' });
 
   // 2. Generate client-side values
-  const cnonce = Math.random().toString(36).substring(2, 18);
+  // SECURITY: Use cryptographically secure random for cnonce
+  const randomBytes = new Uint8Array(16);
+  crypto.getRandomValues(randomBytes);
+  const cnonce = Array.from(randomBytes, byte => byte.toString(16).padStart(2, '0')).join('');
   const nc = '00000001';
   const method = 'POST';
   const uri = new URL(url).pathname;
