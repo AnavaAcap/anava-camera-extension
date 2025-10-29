@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,7 +39,84 @@ type ProxyResponse struct {
 var (
 	client *http.Client
 	logger *log.Logger
+	certStore *CertificateStore
 )
+
+// CertificateStore manages certificate fingerprints for known cameras
+type CertificateStore struct {
+	mu           sync.RWMutex
+	fingerprints map[string]string // host -> SHA256 fingerprint
+	filePath     string
+}
+
+// NewCertificateStore creates a new certificate store
+func NewCertificateStore(filePath string) *CertificateStore {
+	store := &CertificateStore{
+		fingerprints: make(map[string]string),
+		filePath:     filePath,
+	}
+	store.load()
+	return store
+}
+
+// load reads saved fingerprints from disk
+func (cs *CertificateStore) load() {
+	data, err := os.ReadFile(cs.filePath)
+	if err != nil {
+		// File doesn't exist yet - that's okay
+		return
+	}
+
+	var fingerprints map[string]string
+	if err := json.Unmarshal(data, &fingerprints); err != nil {
+		logger.Printf("Warning: Failed to load certificate store: %v", err)
+		return
+	}
+
+	cs.mu.Lock()
+	cs.fingerprints = fingerprints
+	cs.mu.Unlock()
+
+	logger.Printf("Loaded %d certificate fingerprints", len(fingerprints))
+}
+
+// save writes fingerprints to disk
+func (cs *CertificateStore) save() {
+	cs.mu.RLock()
+	data, err := json.MarshalIndent(cs.fingerprints, "", "  ")
+	cs.mu.RUnlock()
+
+	if err != nil {
+		logger.Printf("Error marshaling certificate store: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(cs.filePath, data, 0600); err != nil {
+		logger.Printf("Error saving certificate store: %v", err)
+	}
+}
+
+// GetFingerprint returns the stored fingerprint for a host
+func (cs *CertificateStore) GetFingerprint(host string) (string, bool) {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	fp, ok := cs.fingerprints[host]
+	return fp, ok
+}
+
+// SetFingerprint stores a fingerprint for a host
+func (cs *CertificateStore) SetFingerprint(host, fingerprint string) {
+	cs.mu.Lock()
+	cs.fingerprints[host] = fingerprint
+	cs.mu.Unlock()
+	cs.save()
+}
+
+// calculateCertFingerprint returns SHA256 fingerprint of certificate
+func calculateCertFingerprint(cert *x509.Certificate) string {
+	hash := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(hash[:])
+}
 
 // sanitizeCredential redacts sensitive credential information for logging
 // Shows first and last character only, e.g., "anava" -> "a***a"
@@ -80,12 +161,54 @@ func init() {
 	logger = log.New(f, "", log.LstdFlags)
 	logger.Println("=== Camera Proxy Server started ===")
 
-	// Create HTTP client for camera connections (NOT sandboxed)
-	// Note: We override timeout per-request for the unauthenticated test
+	// SECURITY: Initialize certificate store for pinning
+	certStoreDir := filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "Anava")
+	os.MkdirAll(certStoreDir, 0700)
+	certStoreFile := filepath.Join(certStoreDir, "certificate-fingerprints.json")
+	certStore = NewCertificateStore(certStoreFile)
+
+	// Create HTTP client for camera connections with certificate validation
 	client = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
+				// SECURITY: Still accept self-signed, but we'll validate fingerprints
 				InsecureSkipVerify: true,
+				// Callback to validate certificate fingerprints
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					if len(cs.PeerCertificates) == 0 {
+						return fmt.Errorf("no peer certificates")
+					}
+
+					// Get the leaf certificate (server's cert)
+					cert := cs.PeerCertificates[0]
+					host := cs.ServerName
+					currentFingerprint := calculateCertFingerprint(cert)
+
+					// Check if we've seen this host before
+					if storedFingerprint, exists := certStore.GetFingerprint(host); exists {
+						// We've seen this host - verify fingerprint matches
+						if storedFingerprint != currentFingerprint {
+							// SECURITY ALERT: Certificate changed!
+							logger.Printf("🚨 SECURITY ALERT: Certificate changed for %s", host)
+							logger.Printf("   Stored fingerprint: %s", storedFingerprint)
+							logger.Printf("   Current fingerprint: %s", currentFingerprint)
+							logger.Printf("   This could indicate a Man-in-the-Middle attack!")
+
+							// For now, we'll log but allow (to prevent breaking deployments)
+							// In production, consider returning an error here
+							// return fmt.Errorf("certificate fingerprint mismatch for %s", host)
+						} else {
+							logger.Printf("✓ Certificate validated for %s (fingerprint matches)", host)
+						}
+					} else {
+						// First time seeing this host - store fingerprint
+						logger.Printf("📌 Pinning certificate for new host: %s", host)
+						logger.Printf("   Fingerprint: %s", currentFingerprint)
+						certStore.SetFingerprint(host, currentFingerprint)
+					}
+
+					return nil
+				},
 			},
 		},
 		Timeout: 30 * time.Second,
