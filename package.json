@@ -4,7 +4,7 @@
   "description": "Discover Axis cameras on local network and deploy ACAP applications",
   "type": "module",
   "scripts": {
-    "build": "tsc && cp manifest.json popup.html popup.css popup.js background.js rules.json dist/",
+    "build": "python3 build-icons.py && tsc && cp manifest.json popup.html popup.css popup.js background.js rules.json dist/",
     "watch": "tsc --watch",
     "dev": "npm run watch"
   },

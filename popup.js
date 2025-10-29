@@ -1,399 +1,196 @@
 /**
- * Popup UI Controller - Single-Page Flow
- * Scan → Select → Configure → Deploy
+ * Anava Local Network Bridge - Connection Indicator
+ *
+ * Connection Status:
+ * - GREEN = Both proxy server AND web app are reachable
+ * - YELLOW = Only proxy OR web app is reachable (partial connection)
+ * - RED = Neither proxy nor web app is reachable
  */
 
-import { CameraDiscoveryService } from './src/services/CameraDiscovery.js';
-import { AcapDeploymentService } from './src/services/AcapDeploymentService.js';
-
-// State
-let discoveryService = new CameraDiscoveryService();
-let deploymentService = new AcapDeploymentService();
-let discoveredCameras = [];
-let selectedCameras = new Set();
-let currentStep = 1;
+// Configuration
+const WEB_APP_URL = 'https://anava-ai.web.app/';
+const PROXY_HEALTH_URL = 'http://127.0.0.1:9876/health';
 
 // DOM Elements
-const stepScan = document.getElementById('step-scan');
-const stepSelect = document.getElementById('step-select');
-const stepConfigure = document.getElementById('step-configure');
-const stepDeploy = document.getElementById('step-deploy');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const proxyStatus = document.getElementById('proxy-status');
+const webAppStatus = document.getElementById('web-app-status');
+const extensionIdEl = document.getElementById('extension-id');
+const openWebAppBtn = document.getElementById('open-web-app');
+const setupInstructions = document.getElementById('setup-instructions');
 
-const networkRangeInput = document.getElementById('network-range');
-const usernameInput = document.getElementById('username');
-const passwordInput = document.getElementById('password');
-const intensitySelect = document.getElementById('intensity');
-const startScanBtn = document.getElementById('start-scan');
-const testSingleIpBtn = document.getElementById('test-single-ip');
-
-const progressSection = document.getElementById('progress-section');
-const progressFill = document.getElementById('progress-fill');
-const progressText = document.getElementById('progress-text');
-
-const cameraCount = document.getElementById('camera-count');
-const cameraList = document.getElementById('camera-list');
-const continueConfigureBtn = document.getElementById('continue-configure');
-
-const selectedCount = document.getElementById('selected-count');
-const licenseKeyInput = document.getElementById('license-key');
-const customerIdInput = document.getElementById('customer-id');
-const firebaseConfigInput = document.getElementById('firebase-config');
-const geminiConfigInput = document.getElementById('gemini-config');
-const backToSelectBtn = document.getElementById('back-to-select');
-const startDeployBtn = document.getElementById('start-deploy');
-
-const deployStatus = document.getElementById('deploy-status');
-const finishDeployBtn = document.getElementById('finish-deploy');
-
-// Step Navigation
-function goToStep(step) {
-  currentStep = step;
-
-  console.log('🎯 goToStep called with step:', step);
-
-  // Update step indicators
-  document.querySelectorAll('.step').forEach((el, i) => {
-    el.classList.remove('active', 'completed');
-    if (i + 1 < step) {
-      el.classList.add('completed');
-    } else if (i + 1 === step) {
-      el.classList.add('active');
-    }
-  });
-
-  // Show/hide step sections (MUST set style.display, not just CSS class)
-  [stepScan, stepSelect, stepConfigure, stepDeploy].forEach((section, i) => {
-    if (i + 1 === step) {
-      section.style.display = 'block';
-      section.classList.add('active');
-      console.log('🎯 Showing section:', section.id);
-    } else {
-      section.style.display = 'none';
-      section.classList.remove('active');
-    }
-  });
-
-  console.log('🎯 goToStep complete. Current visible section:',
-    [stepScan, stepSelect, stepConfigure, stepDeploy].find(s => s.style.display === 'block')?.id);
-}
-
-// DEBUG: Test single IP
-testSingleIpBtn.addEventListener('click', async () => {
-  const username = usernameInput.value.trim();
-  const password = passwordInput.value.trim();
-  const testIp = '192.168.50.156';
-
-  if (!username || !password) {
-    alert('Please enter credentials');
-    return;
-  }
-
-  testSingleIpBtn.disabled = true;
-  console.log(`\n\n${'*'.repeat(100)}`);
-  console.log(`DEBUG TEST: Testing ${testIp} directly (bypassing network scan)`);
-  console.log(`${'*'.repeat(100)}\n\n`);
-
+/**
+ * Check if proxy server is running
+ */
+async function checkProxyServer() {
   try {
-    const camera = await discoveryService.debugTestSpecificIP(testIp, username, password);
-
-    if (camera) {
-      console.log(`\n✅ DEBUG TEST SUCCESS: Camera found!`, camera);
-      alert(`Camera found at ${testIp}!\nModel: ${camera.model}\nFirmware: ${camera.firmwareVersion}`);
-    } else {
-      console.log(`\n❌ DEBUG TEST FAILED: No camera found (null returned)`);
-      alert(`No camera found at ${testIp}. Check console for details.`);
-    }
-  } catch (error) {
-    console.error(`\n❌ DEBUG TEST ERROR:`, error);
-    alert(`Error testing ${testIp}: ${error.message}`);
-  } finally {
-    testSingleIpBtn.disabled = false;
-  }
-});
-
-// Step 1: Network Scan
-startScanBtn.addEventListener('click', async () => {
-  const networkRange = networkRangeInput.value.trim();
-  const username = usernameInput.value.trim();
-  const password = passwordInput.value.trim();
-  const intensity = intensitySelect.value;
-
-  if (!networkRange || !username || !password) {
-    alert('Please fill in all required fields');
-    return;
-  }
-
-  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(networkRange)) {
-    alert('Invalid network range format. Use CIDR notation (e.g., 192.168.50.0/24)');
-    return;
-  }
-
-  startScanBtn.disabled = true;
-  progressSection.style.display = 'block';
-  discoveredCameras = [];
-
-  try {
-    const cameras = await discoveryService.scanNetworkForCameras(
-      networkRange,
-      username,
-      password,
-      {
-        intensity,
-        onProgress: (progress) => {
-          progressText.textContent = `Scanning ${progress.ip}...`;
-
-          // Calculate progress percentage
-          const ipParts = progress.ip.split('.');
-          if (ipParts.length === 4) {
-            const lastOctet = parseInt(ipParts[3]);
-            const progressPercent = (lastOctet / 254) * 100;
-            progressFill.style.width = `${Math.min(progressPercent, 100)}%`;
-          }
-        }
-      }
-    );
-
-    discoveredCameras = cameras;
-
-    console.log('🎯 SCAN COMPLETE - Cameras found:', cameras.length);
-    console.log('🎯 Camera data:', JSON.stringify(cameras, null, 2));
-
-    if (cameras.length === 0) {
-      alert('No cameras found. Please check your network range and credentials.');
-      progressSection.style.display = 'none';
-      startScanBtn.disabled = false;
-      return;
-    }
-
-    // Move to selection step
-    progressSection.style.display = 'none';
-    console.log('🎯 Calling displayCameras with', cameras.length, 'cameras');
-    displayCameras(cameras);
-    console.log('🎯 Calling goToStep(2)');
-    goToStep(2);
-  } catch (error) {
-    alert(`Scan failed: ${error.message}`);
-    progressSection.style.display = 'none';
-  } finally {
-    startScanBtn.disabled = false;
-  }
-});
-
-// Step 2: Display and Select Cameras
-function displayCameras(cameras) {
-  console.log('🎯 displayCameras called with:', cameras);
-  console.log('🎯 cameraList element:', cameraList);
-  console.log('🎯 cameraCount element:', cameraCount);
-
-  cameraCount.textContent = cameras.length;
-  cameraList.innerHTML = '';
-
-  console.log('🎯 Set camera count to:', cameras.length);
-
-  cameras.forEach(camera => {
-    const card = document.createElement('div');
-    card.className = 'camera-card';
-
-    const isSupported = camera.isSupported !== false;
-    const statusClass = isSupported ? '' : 'unsupported';
-    const statusText = isSupported ? 'Supported' : 'Unsupported';
-
-    card.innerHTML = `
-      <div class="camera-header">
-        <div class="camera-model">${camera.model}</div>
-        <div class="camera-status ${statusClass}">${statusText}</div>
-      </div>
-      <div class="camera-details">
-        <div class="camera-detail"><strong>IP:</strong> ${camera.ip}:${camera.port}</div>
-        <div class="camera-detail"><strong>Firmware:</strong> ${camera.firmwareVersion || 'Unknown'}</div>
-        <div class="camera-detail"><strong>Protocol:</strong> ${camera.protocol?.toUpperCase()}</div>
-        <div class="camera-detail"><strong>Serial:</strong> ${camera.serialNumber || 'N/A'}</div>
-      </div>
-    `;
-
-    if (!isSupported) {
-      const reason = document.createElement('div');
-      reason.style.marginTop = '8px';
-      reason.style.fontSize = '11px';
-      reason.style.color = '#f44336';
-      reason.textContent = camera.unsupportedReason || 'Firmware version not supported';
-      card.appendChild(reason);
-    }
-
-    card.addEventListener('click', () => {
-      if (!isSupported) return; // Don't allow selecting unsupported cameras
-
-      if (selectedCameras.has(camera.id)) {
-        selectedCameras.delete(camera.id);
-        card.classList.remove('selected');
-      } else {
-        selectedCameras.add(camera.id);
-        card.classList.add('selected');
-      }
-      updateContinueButton();
+    const response = await fetch(PROXY_HEALTH_URL, {
+      method: 'GET',
+      signal: AbortSignal.timeout(3000) // 3 second timeout
     });
 
-    cameraList.appendChild(card);
-  });
-}
-
-function updateContinueButton() {
-  continueConfigureBtn.disabled = selectedCameras.size === 0;
-}
-
-continueConfigureBtn.addEventListener('click', () => {
-  selectedCount.textContent = selectedCameras.size;
-  goToStep(3);
-  updateDeployButton();
-});
-
-// Step 3: Configuration
-[licenseKeyInput, customerIdInput, firebaseConfigInput, geminiConfigInput].forEach(input => {
-  input.addEventListener('input', updateDeployButton);
-});
-
-function updateDeployButton() {
-  const licenseKey = licenseKeyInput.value.trim();
-  const customerId = customerIdInput.value.trim();
-  const firebaseConfig = firebaseConfigInput.value.trim();
-  const geminiConfig = geminiConfigInput.value.trim();
-
-  startDeployBtn.disabled = !licenseKey || !customerId || !firebaseConfig || !geminiConfig;
-}
-
-backToSelectBtn.addEventListener('click', () => {
-  goToStep(2);
-});
-
-// Step 4: Deployment
-startDeployBtn.addEventListener('click', async () => {
-  const licenseKey = licenseKeyInput.value.trim();
-  const firebaseConfigText = firebaseConfigInput.value.trim();
-  const geminiConfigText = geminiConfigInput.value.trim();
-  const customerId = customerIdInput.value.trim();
-
-  // Parse configs
-  let firebaseConfig, geminiConfig;
-  try {
-    firebaseConfig = JSON.parse(firebaseConfigText);
-    geminiConfig = JSON.parse(geminiConfigText);
-  } catch (error) {
-    alert('Invalid JSON in Firebase or Gemini config. Please check your input.');
-    return;
-  }
-
-  // Get selected cameras
-  const camerasToDeply = discoveredCameras.filter(c => selectedCameras.has(c.id));
-
-  if (camerasToDeply.length === 0) {
-    alert('No cameras selected for deployment');
-    return;
-  }
-
-  // Build deployment config
-  const deploymentConfig = {
-    firebaseConfig: {
-      apiKey: firebaseConfig.apiKey,
-      authDomain: firebaseConfig.authDomain,
-      projectId: firebaseConfig.projectId,
-      storageBucket: firebaseConfig.storageBucket,
-      messagingSenderId: firebaseConfig.messagingSenderId,
-      appId: firebaseConfig.appId,
-      databaseId: firebaseConfig.databaseId || '(default)'
-    },
-    geminiConfig: {
-      vertexApiGatewayUrl: geminiConfig.vertexApiGatewayUrl,
-      vertexApiGatewayKey: geminiConfig.vertexApiGatewayKey,
-      vertexGcpProjectId: geminiConfig.vertexGcpProjectId,
-      vertexGcpRegion: geminiConfig.vertexGcpRegion || 'us-central1',
-      vertexGcsBucketName: geminiConfig.vertexGcsBucketName
-    },
-    anavaKey: licenseKey,
-    customerId: customerId
-  };
-
-  // Move to deployment step
-  goToStep(4);
-  deployStatus.innerHTML = '';
-  startDeployBtn.disabled = true;
-
-  // Deploy to each camera
-  const deploymentPromises = camerasToDeply.map(async (camera) => {
-    const cardId = `deploy-card-${camera.id}`;
-
-    // Create deployment card
-    const card = document.createElement('div');
-    card.id = cardId;
-    card.className = 'deploy-card';
-    card.innerHTML = `
-      <div class="deploy-card-header">
-        <div class="deploy-card-title">${camera.model} (${camera.ip})</div>
-        <div class="deploy-card-status">⏳ Pending</div>
-      </div>
-      <div class="deploy-card-progress">
-        <div class="deploy-progress-bar">
-          <div class="deploy-progress-fill" style="width: 0%"></div>
-        </div>
-        <div class="deploy-stage-text">Waiting to start...</div>
-      </div>
-    `;
-    deployStatus.appendChild(card);
-
-    const statusDiv = card.querySelector('.deploy-card-status');
-    const progressFill = card.querySelector('.deploy-progress-fill');
-    const stageText = card.querySelector('.deploy-stage-text');
-
-    try {
-      // Start deployment
-      const result = await deploymentService.deployCameraComplete(
-        camera,
-        licenseKey,
-        deploymentConfig,
-        (stage, percent) => {
-          // Update progress
-          progressFill.style.width = `${percent}%`;
-          stageText.textContent = stage;
-        }
-      );
-
-      if (result.success) {
-        statusDiv.textContent = '✅ Complete';
-        statusDiv.style.color = '#4caf50';
-        stageText.textContent = 'Deployment successful!';
-      } else {
-        statusDiv.textContent = '❌ Failed';
-        statusDiv.style.color = '#f44336';
-        stageText.textContent = result.error || 'Deployment failed';
-      }
-    } catch (error) {
-      statusDiv.textContent = '❌ Error';
-      statusDiv.style.color = '#f44336';
-      stageText.textContent = error.message;
+    if (response.ok) {
+      const data = await response.json();
+      return data.status === 'ok';
     }
-  });
+    return false;
+  } catch (error) {
+    console.log('Proxy server check failed:', error.message);
+    return false;
+  }
+}
 
-  // Wait for all deployments to complete
-  await Promise.allSettled(deploymentPromises);
+/**
+ * Check if web app is reachable
+ */
+async function checkWebApp() {
+  try {
+    const response = await fetch(WEB_APP_URL, {
+      method: 'HEAD',
+      mode: 'no-cors', // Avoid CORS issues
+      signal: AbortSignal.timeout(5000) // 5 second timeout
+    });
 
-  finishDeployBtn.style.display = 'block';
-  alert('Deployment complete! Check the status of each camera above.');
+    // With no-cors, we can't read the response, but if fetch succeeds, site is reachable
+    return true;
+  } catch (error) {
+    console.log('Web app check failed:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Update UI based on connection status
+ *
+ * @param {boolean} proxyConnected - Is proxy server reachable?
+ * @param {boolean} webAppConnected - Is web app reachable?
+ */
+function updateConnectionStatus(proxyConnected, webAppConnected) {
+  // Update proxy status display
+  proxyStatus.classList.remove('checking');
+  if (proxyConnected) {
+    proxyStatus.textContent = 'Running';
+    proxyStatus.className = 'status-item-value connected';
+  } else {
+    proxyStatus.textContent = 'Not Running';
+    proxyStatus.className = 'status-item-value disconnected';
+  }
+
+  // Update web app status display
+  webAppStatus.classList.remove('checking');
+  if (webAppConnected) {
+    webAppStatus.textContent = 'Reachable';
+    webAppStatus.className = 'status-item-value connected';
+  } else {
+    webAppStatus.textContent = 'Not Reachable';
+    webAppStatus.className = 'status-item-value disconnected';
+  }
+
+  // Determine overall status based on both connections
+  const bothConnected = proxyConnected && webAppConnected;
+  const partialConnection = proxyConnected || webAppConnected;
+  const neitherConnected = !proxyConnected && !webAppConnected;
+
+  // Update status description
+  const statusDescription = document.getElementById('status-description');
+
+  if (bothConnected) {
+    // GREEN - Full connection
+    statusDot.className = 'status-dot connected';
+    statusText.textContent = 'Connected';
+    statusDescription.textContent = 'All systems operational';
+    setupInstructions.style.display = 'none';
+    openWebAppBtn.disabled = false;
+  } else if (partialConnection) {
+    // YELLOW - Partial connection
+    statusDot.className = 'status-dot partial';
+    statusText.textContent = 'Partial Connection';
+    statusDescription.textContent = 'Connection incomplete';
+    setupInstructions.style.display = 'block';
+
+    // Update instructions based on what's missing
+    const instructionsText = document.getElementById('instructions-text');
+    if (!proxyConnected) {
+      instructionsText.innerHTML = `
+        <p><strong>Proxy server is not running.</strong> The web app is reachable, but you won't be able to deploy cameras without the local proxy.</p>
+        <ol>
+          <li>Run: <code>./install-proxy.sh</code></li>
+          <li>Verify: <code>curl http://127.0.0.1:9876/health</code></li>
+        </ol>
+      `;
+    } else {
+      instructionsText.innerHTML = `
+        <p><strong>Web app is not reachable.</strong> The proxy server is running, but you need the web interface to deploy cameras.</p>
+        <ol>
+          <li>Check your internet connection</li>
+          <li>Try opening <a href="${WEB_APP_URL}" target="_blank">${WEB_APP_URL}</a> in a new tab</li>
+        </ol>
+      `;
+    }
+
+    openWebAppBtn.disabled = !webAppConnected; // Enable button only if web app is reachable
+  } else {
+    // RED - Not connected
+    statusDot.className = 'status-dot disconnected';
+    statusText.textContent = 'Not Connected';
+    statusDescription.textContent = 'Unable to connect';
+    setupInstructions.style.display = 'block';
+
+    const instructionsText = document.getElementById('instructions-text');
+    instructionsText.innerHTML = `
+      <p><strong>Both proxy server and web app are unreachable.</strong></p>
+      <ol>
+        <li>Check your internet connection</li>
+        <li>Install proxy: <code>./install-proxy.sh</code></li>
+        <li>Verify proxy: <code>curl http://127.0.0.1:9876/health</code></li>
+        <li>Try opening <a href="${WEB_APP_URL}" target="_blank">${WEB_APP_URL}</a></li>
+      </ol>
+    `;
+
+    openWebAppBtn.disabled = true;
+  }
+}
+
+/**
+ * Initialize popup
+ */
+async function initialize() {
+  // Show extension ID
+  const extensionId = chrome.runtime.id;
+  extensionIdEl.textContent = extensionId;
+
+  // Set web app URL
+  openWebAppBtn.href = WEB_APP_URL;
+
+  // Check both proxy server and web app
+  console.log('Checking connections...');
+  const [proxyConnected, webAppConnected] = await Promise.all([
+    checkProxyServer(),
+    checkWebApp()
+  ]);
+
+  console.log('Proxy server:', proxyConnected ? 'Connected' : 'Not Connected');
+  console.log('Web app:', webAppConnected ? 'Reachable' : 'Not Reachable');
+
+  updateConnectionStatus(proxyConnected, webAppConnected);
+
+  // Auto-refresh status every 5 seconds
+  setInterval(async () => {
+    const [proxy, webApp] = await Promise.all([
+      checkProxyServer(),
+      checkWebApp()
+    ]);
+    updateConnectionStatus(proxy, webApp);
+  }, 5000);
+}
+
+/**
+ * Handle open web app button click
+ */
+openWebAppBtn.addEventListener('click', (e) => {
+  console.log('Opening web app at:', WEB_APP_URL);
 });
 
-finishDeployBtn.addEventListener('click', () => {
-  // Reset to start
-  goToStep(1);
-  selectedCameras.clear();
-  discoveredCameras = [];
-  progressSection.style.display = 'none';
-  progressFill.style.width = '0%';
-  finishDeployBtn.style.display = 'none';
-
-  // Clear forms
-  licenseKeyInput.value = '';
-  customerIdInput.value = '';
-  firebaseConfigInput.value = '';
-  geminiConfigInput.value = '';
-});
-
-// Initialize
-goToStep(1);
+// Initialize on load
+initialize();

@@ -1,0 +1,13 @@
+#!/bin/bash
+# Create simple colored square icons as placeholders
+
+# Create 16x16 icon (base64 encoded 1x1 PNG, scaled)
+echo "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKklEQVR42mNk+M/wn4EIwMRAIhg1YNSAUQNGDRg1YNSAUQNGDRjZBgAA//8DAJ0HBz0AAAAASUVORK5CYII=" | base64 -d > dist/icon16.png
+
+# Create 48x48 icon
+echo "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAk0lEQVR42u3XQQrAIAxE0dz/0t1FoRRsJwmBCbpw4S/8DAaVMQzDMAzDMH5Qa90Yc67a2VfV9VLVvWKYh2EYhmEYxrfRPQAAAAAAAAAAAAAAAAAAAPxbq3V63fN73bNzVd3zqq7rnp1VdV33rKrrumfnqrrns+pa1T07V9V136t6VtV13bNzVV3XPatqGIZhGD/rAZYyCg0FGZt8AAAAAElFTkSuQmCC" | base64 -d > dist/icon48.png
+
+# Create 128x128 icon
+echo "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAABRUlEQVR42u3RAQ0AAAjDMO5fNCCDkC5z0HTVrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWvXrl27du3atWu3ARSPAAGxUUjOAAAAAElFTkSuQmCC" | base64 -d > dist/icon128.png
+
+echo "Icons created successfully!"

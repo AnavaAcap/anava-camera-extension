@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Chrome extension for discovering Axis cameras on local networks and deploying ACAP applications. Uses TCP port scanning (NOT mDNS) - proven method ported from the Anava Vision Electron installer.
+**NEW ARCHITECTURE (v2.0+)**: Chrome extension is now a **simple bridge** between the web app and local network. All UI, deployment logic, and state management happens in the Anava web deployer (anava-infrastructure-deployer).
+
+**Extension Purpose**: Connection indicator + link to web app. Shows green/red status based on proxy server availability.
 
 ## Build & Development Commands
 
@@ -121,15 +123,16 @@ if resp.Status == 401 {
 
 Missing body in step 2 caused "JSON syntax error" from camera.
 
-### UI Flow (popup.js)
+### UI Flow (popup.js) - NEW SIMPLIFIED VERSION
 
-Single-page flow with 4 steps:
-1. **Scan** - Configure network range + credentials
-2. **Select** - Choose discovered cameras
-3. **Configure** - Enter license key + Firebase/Gemini config
-4. **Deploy** - Upload ACAP + activate + configure
+**Connection Indicator Only**:
+1. Shows **green dot** if proxy server responds to `/health` endpoint
+2. Shows **red dot** if proxy server is not running
+3. Displays clickable link to web app (default: http://localhost:5173)
+4. Auto-refreshes status every 5 seconds
+5. Shows setup instructions if not connected
 
-**CRITICAL UI FIX**: Inline `style="display: none;"` in HTML overrides CSS classes. The `goToStep()` function MUST explicitly set `style.display = 'block'` or `'none'` instead of relying on CSS `.active` class. CSS specificity fails when inline styles are present.
+**No deployment UI** - all camera scanning, selection, and deployment happens in the web app.
 
 ### Components
 
