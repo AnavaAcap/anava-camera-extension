@@ -54,6 +54,17 @@ func sanitizeCredential(credential string) string {
 	return masked
 }
 
+// SECURITY: Allowed origins for CORS (whitelist approach)
+// Only these origins can make requests to the proxy server
+var allowedOrigins = map[string]bool{
+	"http://localhost:5173":       true, // Local dev server
+	"http://localhost:3000":       true, // Alternative local dev
+	"https://anava-ai.web.app":    true, // Production web app
+	"http://127.0.0.1:5173":       true, // Localhost IP variant
+	"http://127.0.0.1:3000":       true, // Localhost IP variant
+	"chrome-extension://ojhdgnojgelfiejpgipjddfddgefdpfa": true, // Extension ID (from install script)
+}
+
 func init() {
 	// Setup logging
 	logDir := filepath.Join(os.Getenv("HOME"), "Library", "Logs")
@@ -79,6 +90,41 @@ func init() {
 		},
 		Timeout: 30 * time.Second,
 	}
+}
+
+// isOriginAllowed checks if the request origin is in the whitelist
+func isOriginAllowed(origin string) bool {
+	// Empty origin = same-origin or localhost direct access (allow for testing)
+	if origin == "" {
+		return true
+	}
+	return allowedOrigins[origin]
+}
+
+// setCORSHeaders sets appropriate CORS headers based on origin validation
+func setCORSHeaders(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+
+	// SECURITY: Validate origin against whitelist
+	if !isOriginAllowed(origin) {
+		logger.Printf("SECURITY: Blocked request from unauthorized origin: %s", origin)
+		http.Error(w, "Forbidden: Origin not allowed", http.StatusForbidden)
+		return false
+	}
+
+	// Set specific origin (not wildcard)
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	} else {
+		// For direct localhost access (no origin header), allow localhost
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+	}
+
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	return true
 }
 
 // tryUnauthenticatedRequest makes ONE request without auth (3 second timeout)
@@ -166,16 +212,20 @@ func main() {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: Validate origin (even for health checks)
+	if !setCORSHeaders(w, r) {
+		return // setCORSHeaders already sent error response
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS for Chrome extension
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	// SECURITY: Validate origin before processing request
+	if !setCORSHeaders(w, r) {
+		return // setCORSHeaders already sent error response
+	}
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
