@@ -32,13 +32,35 @@ var logger *log.Logger
 
 const proxyServerURL = "http://127.0.0.1:9876/proxy"
 
+// sanitizeCredential redacts sensitive credential information for logging
+// Shows first and last character only, e.g., "anava" -> "a***a"
+func sanitizeCredential(credential string) string {
+	if len(credential) == 0 {
+		return "[empty]"
+	}
+	if len(credential) == 1 {
+		return "*"
+	}
+	if len(credential) == 2 {
+		return string(credential[0]) + "*"
+	}
+	// Show first and last char, mask the rest
+	masked := string(credential[0])
+	for i := 1; i < len(credential)-1; i++ {
+		masked += "*"
+	}
+	masked += string(credential[len(credential)-1])
+	return masked
+}
+
 func init() {
 	// Setup logging
 	logDir := filepath.Join(os.Getenv("HOME"), "Library", "Logs")
 	os.MkdirAll(logDir, 0755)
 
 	logFile := filepath.Join(logDir, "anava-native-host.log")
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// SECURITY: Use 0600 permissions (owner read/write only)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Fatal("Failed to open log file:", err)
 	}
@@ -63,7 +85,8 @@ func main() {
 		return
 	}
 
-	logger.Printf("Received request: method=%s url=%s username=%s", req.Method, req.URL, req.Username)
+	// SECURITY: Sanitize credentials in logs
+	logger.Printf("Received request: method=%s url=%s username=%s", req.Method, req.URL, sanitizeCredential(req.Username))
 
 	// Forward to local proxy server
 	resp, err := forwardToProxy(req)

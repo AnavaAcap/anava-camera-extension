@@ -37,13 +37,31 @@ var (
 	logger *log.Logger
 )
 
+// sanitizeCredential redacts sensitive credential information for logging
+// Shows first and last character only, e.g., "anava" -> "a***a"
+func sanitizeCredential(credential string) string {
+	if len(credential) == 0 {
+		return "[empty]"
+	}
+	if len(credential) == 1 {
+		return "*"
+	}
+	if len(credential) == 2 {
+		return string(credential[0]) + "*"
+	}
+	// Show first and last char, mask the rest
+	masked := string(credential[0]) + strings.Repeat("*", len(credential)-2) + string(credential[len(credential)-1])
+	return masked
+}
+
 func init() {
 	// Setup logging
 	logDir := filepath.Join(os.Getenv("HOME"), "Library", "Logs")
 	os.MkdirAll(logDir, 0755)
 
 	logFile := filepath.Join(logDir, "anava-camera-proxy-server.log")
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// SECURITY: Use 0600 permissions (owner read/write only)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Fatal("Failed to open log file:", err)
 	}
@@ -177,7 +195,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Printf("Proxying request: %s %s (user: %s)", req.Method, req.URL, req.Username)
+	// SECURITY: Sanitize credentials in logs
+	logger.Printf("Proxying request: %s %s (user: %s)", req.Method, req.URL, sanitizeCredential(req.Username))
 	if req.Body != nil && len(req.Body) > 0 {
 		bodyJSON, _ := json.Marshal(req.Body)
 		logger.Printf("Received request body: %s", string(bodyJSON))
