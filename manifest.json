@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Anava Local Network Bridge",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Provides local network access for Anava Camera Deployer web application. Required for camera discovery and configuration.",
   "permissions": [
     "nativeMessaging"
@@ -14,8 +14,10 @@
     "matches": [
       "http://localhost:5173/*",
       "http://localhost:3000/*",
-      "https://anava-ai.web.app/*"
-    ]
+      "https://anava-ai.web.app/*",
+      "https://anava-ai.firebaseapp.com/*"
+    ],
+    "accepts_tls_channel_id": false
   },
   "action": {
     "default_popup": "popup.html",

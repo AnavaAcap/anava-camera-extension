@@ -234,6 +234,14 @@ func isOriginAllowed(origin string) bool {
 	if origin == "" {
 		return true
 	}
+
+	// DEV MODE: Allow any chrome-extension:// origin for development
+	// In production, you should whitelist specific extension IDs
+	if strings.HasPrefix(origin, "chrome-extension://") {
+		logger.Printf("Allowing chrome-extension origin: %s", origin)
+		return true
+	}
+
 	return allowedOrigins[origin]
 }
 
