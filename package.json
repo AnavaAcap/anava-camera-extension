@@ -2,9 +2,8 @@
   "name": "anava-camera-extension",
   "version": "1.0.0",
   "description": "Discover Axis cameras on local network and deploy ACAP applications",
-  "type": "module",
   "scripts": {
-    "build": "python3 build-icons.py && tsc && cp manifest.json popup.html popup.css popup.js background.js rules.json dist/",
+    "build": "node build.js",
     "watch": "tsc --watch",
     "dev": "npm run watch"
   },
@@ -19,6 +18,7 @@
   "license": "UNLICENSED",
   "devDependencies": {
     "@types/chrome": "^0.0.254",
+    "esbuild": "^0.25.11",
     "typescript": "^5.3.3"
   }
 }

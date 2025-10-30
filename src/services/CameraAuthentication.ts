@@ -1,22 +1,19 @@
 /**
- * Camera Authentication Service - Chrome Extension Edition with Native Messaging
+ * Camera Authentication Service - Chrome Extension Edition with Proxy Server
  *
  * ARCHITECTURE:
- * 1. Try native messaging host (bypasses certificate issues)
- * 2. Fallback to background service worker (legacy method)
- *
- * CRITICAL: Native messaging host allows HTTPS with self-signed certs
- * - Solves NET::ERR_CERT_AUTHORITY_INVALID issues
+ * Uses localhost proxy server at port 9876 to handle camera authentication
+ * - Proxy handles HTTPS with self-signed certs
  * - No browser auth popup
- * - Direct communication with cameras
+ * - Direct communication with cameras via proxy
  */
 
 import { CameraAuthResult, getDeviceType } from '../types/Camera.js';
 
-// Native messaging host configuration
-const NATIVE_HOST_NAME = 'com.anava.camera_proxy';
+// Proxy server configuration
+const PROXY_URL = 'http://127.0.0.1:9876/proxy';
 
-interface NativeRequest {
+interface ProxyRequest {
   url: string;
   method: string;
   username: string;
@@ -24,91 +21,81 @@ interface NativeRequest {
   body?: any;
 }
 
-interface NativeResponse {
+interface ProxyResponse {
   status?: number;
   data?: any;
   error?: string;
 }
 
 /**
- * Check if native messaging host is available
+ * Check if proxy server is available
  */
-async function isNativeHostAvailable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST_NAME,
-        { url: 'https://httpbin.org/status/200', method: 'GET', username: 'test', password: 'test' },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.log(`ℹ️ [NativeHost] Not available: ${chrome.runtime.lastError.message}`);
-            resolve(false);
-          } else {
-            console.log(`✅ [NativeHost] Available and responding`);
-            resolve(true);
-          }
-        }
-      );
-    } catch (error) {
-      console.log(`ℹ️ [NativeHost] Check failed:`, error);
-      resolve(false);
+async function isProxyAvailable(): Promise<boolean> {
+  try {
+    const response = await fetch('http://127.0.0.1:9876/health', {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    });
+
+    if (!response.ok) {
+      console.log(`ℹ️ [Proxy] Health check failed: ${response.status}`);
+      return false;
     }
-  });
+
+    console.log(`✅ [Proxy] Server is healthy and responding`);
+    return true;
+  } catch (error: any) {
+    console.log(`ℹ️ [Proxy] Not available: ${error.message}`);
+    return false;
+  }
 }
 
 /**
- * Make authenticated request via native messaging host
+ * Make authenticated request via proxy server
  */
-async function makeNativeRequest(
+async function makeProxyRequest(
   url: string,
   method: string,
   username: string,
   password: string,
   body?: any
-): Promise<NativeResponse> {
-  return new Promise((resolve, reject) => {
-    const request: NativeRequest = {
-      url,
-      method,
-      username,
-      password,
-      ...(body && { body })
-    };
+): Promise<ProxyResponse> {
+  const request: ProxyRequest = {
+    url,
+    method,
+    username,
+    password,
+    ...(body && { body })
+  };
 
-    const timeout = setTimeout(() => {
-      reject(new Error('Native host timeout after 10 seconds'));
-    }, 10000);
+  try {
+    const response = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(10000)
+    });
 
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      request,
-      (response: NativeResponse) => {
-        clearTimeout(timeout);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Proxy returned error ${response.status}: ${errorText}`);
+    }
 
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
+    const result = await response.json();
 
-        if (!response) {
-          reject(new Error('No response from native host'));
-          return;
-        }
+    if (result.error) {
+      throw new Error(result.error);
+    }
 
-        if (response.error) {
-          reject(new Error(response.error));
-          return;
-        }
-
-        resolve(response);
-      }
-    );
-  });
+    return result;
+  } catch (error: any) {
+    throw new Error(`Proxy request failed: ${error.message}`);
+  }
 }
 
 /**
  * Test camera authentication - Main entry point
- * Tries native messaging first, falls back to background worker
+ * Uses proxy server for all camera communication
  */
 export async function authenticateCamera(
   ip: string,
@@ -118,29 +105,29 @@ export async function authenticateCamera(
 ): Promise<CameraAuthResult> {
   console.log(`🔐 [CameraAuth] Testing authentication for ${ip}:${port || 'auto'}`);
 
-  // Check if native host is available
-  const hasNativeHost = await isNativeHostAvailable();
-  console.log(`🔐 [CameraAuth] Native host available: ${hasNativeHost}`);
+  // Check if proxy server is available
+  const hasProxy = await isProxyAvailable();
+  console.log(`🔐 [CameraAuth] Proxy server available: ${hasProxy}`);
 
-  // Determine ports to test
-  const portsToTest = port ? [port] : [443, 80];
+  if (!hasProxy) {
+    return {
+      success: false,
+      accessible: false,
+      authRequired: true,
+      reason: 'Proxy server not available',
+      error: 'Proxy server not running. Please run: ./install-proxy.sh'
+    };
+  }
+
+  // Determine ports to test (HTTPS-only for browser security)
+  const portsToTest = port ? [port] : [443];
 
   for (const testPort of portsToTest) {
     const protocol = testPort === 80 ? 'http' : 'https';
     console.log(`🔐 [CameraAuth] Testing ${protocol.toUpperCase()} on port ${testPort}`);
 
     try {
-      let result: CameraAuthResult;
-
-      if (hasNativeHost) {
-        // Try native messaging first
-        console.log(`🔐 [CameraAuth] Using native messaging host...`);
-        result = await testSinglePortAuthNative(ip, testPort, protocol, username, password);
-      } else {
-        // Fall back to background worker
-        console.log(`🔐 [CameraAuth] Using background worker (native host not available)...`);
-        result = await testSinglePortAuthBackground(ip, testPort, protocol, username, password);
-      }
+      const result = await testSinglePortAuthProxy(ip, testPort, protocol, username, password);
 
       if (result.success) {
         console.log(`✅ [CameraAuth] Authentication successful via ${protocol.toUpperCase()}:${testPort}`);
@@ -158,16 +145,14 @@ export async function authenticateCamera(
     accessible: false,
     authRequired: true,
     reason: 'Authentication failed on all tested ports',
-    error: hasNativeHost
-      ? 'Invalid username or password'
-      : 'Native host not installed. Please run install.sh to enable HTTPS support.'
+    error: 'Invalid username or password, or camera not accessible'
   };
 }
 
 /**
- * Test authentication via native messaging host
+ * Test authentication via proxy server
  */
-async function testSinglePortAuthNative(
+async function testSinglePortAuthProxy(
   ip: string,
   port: number,
   protocol: 'http' | 'https',
@@ -175,7 +160,7 @@ async function testSinglePortAuthNative(
   password: string
 ): Promise<CameraAuthResult> {
   const url = `${protocol}://${ip}:${port}/axis-cgi/basicdeviceinfo.cgi`;
-  console.log(`🔐 [CameraAuth] Testing URL via native host: ${url}`);
+  console.log(`🔐 [CameraAuth] Testing URL via proxy: ${url}`);
 
   const body = {
     apiVersion: '1.0',
@@ -186,8 +171,8 @@ async function testSinglePortAuthNative(
   };
 
   try {
-    const response = await makeNativeRequest(url, 'POST', username, password, body);
-    console.log(`🔐 [CameraAuth] Native host response:`, response);
+    const response = await makeProxyRequest(url, 'POST', username, password, body);
+    console.log(`🔐 [CameraAuth] Proxy response:`, response);
 
     if (response.status === 200 && response.data) {
       // Parse device info
@@ -197,7 +182,7 @@ async function testSinglePortAuthNative(
         success: true,
         accessible: true,
         authRequired: true,
-        authMethod: 'digest', // Native host handles both Basic and Digest
+        authMethod: 'digest', // Proxy handles both Basic and Digest
         protocol,
         port,
         ...deviceInfo
@@ -214,125 +199,17 @@ async function testSinglePortAuthNative(
       };
     }
   } catch (error: any) {
-    console.error(`💥 [CameraAuth] Native host error:`, error);
+    console.error(`💥 [CameraAuth] Proxy error:`, error);
     return {
       success: false,
       accessible: false,
       authRequired: false,
       protocol,
       port,
-      reason: `Native host error: ${error.message}`,
+      reason: `Proxy error: ${error.message}`,
       error: error.message
     };
   }
-}
-
-/**
- * Test authentication on a single port via background worker (legacy method)
- * Sends request to background service worker to avoid browser auth popup
- */
-async function testSinglePortAuthBackground(
-  ip: string,
-  port: number,
-  protocol: 'http' | 'https',
-  username: string,
-  password: string
-): Promise<CameraAuthResult> {
-  const url = `${protocol}://${ip}:${port}/axis-cgi/basicdeviceinfo.cgi`;
-  console.log(`🔐 [CameraAuth] Testing URL via background worker: ${url}`);
-
-  const body = {
-    apiVersion: '1.0',
-    method: 'getProperties',
-    params: {
-      propertyList: ['Brand', 'ProdType', 'ProdNbr', 'ProdFullName', 'SerialNumber']
-    }
-  };
-
-  try {
-    // CRITICAL: Wake up service worker first
-    try {
-      console.log(`🔐 [CameraAuth] Waking up service worker...`);
-      await sendMessageWithTimeout({ type: 'PING' }, 2000);
-      console.log(`🔐 [CameraAuth] Service worker is awake`);
-    } catch (pingError) {
-      console.error(`💥 [CameraAuth] Service worker wake-up failed:`, pingError);
-      throw new Error('Background service worker not responding');
-    }
-
-    // Send auth request with aggressive 10-second timeout
-    const response = await sendMessageWithTimeout({
-      type: 'AXIS_AUTH_REQUEST',
-      payload: {
-        url,
-        username,
-        password,
-        body
-      }
-    }, 10000);
-
-    console.log(`🔐 [CameraAuth] Background worker response:`, response);
-
-    if (response.success) {
-      // Parse device info from background response
-      const deviceInfo = parseDeviceInfo(response.data);
-
-      return {
-        success: true,
-        accessible: true,
-        authRequired: true,
-        authMethod: 'digest',
-        protocol,
-        port,
-        ...deviceInfo
-      };
-    } else {
-      return {
-        success: false,
-        accessible: false,
-        authRequired: true,
-        protocol,
-        port,
-        reason: response.error || 'Authentication failed',
-        error: response.error
-      };
-    }
-  } catch (error: any) {
-    console.error(`💥 [CameraAuth] Error communicating with background worker:`, error);
-    return {
-      success: false,
-      accessible: false,
-      authRequired: false,
-      protocol,
-      port,
-      reason: `Background worker error: ${error.message}`,
-      error: error.message
-    };
-  }
-}
-
-/**
- * Send message to background worker with timeout
- * Prevents infinite hangs when service worker is unresponsive
- */
-function sendMessageWithTimeout(message: any, timeoutMs: number): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Background worker timeout after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    chrome.runtime.sendMessage(message, (response) => {
-      clearTimeout(timeout);
-
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (!response) {
-        reject(new Error('No response from background worker'));
-      } else {
-        resolve(response);
-      }
-    });
-  });
 }
 
 /**
