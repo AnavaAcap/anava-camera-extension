@@ -342,6 +342,8 @@ func main() {
 	// Start HTTP server on localhost only (Chrome can access localhost)
 	http.HandleFunc("/proxy", handleProxyRequest)
 	http.HandleFunc("/health", handleHealth)
+	http.HandleFunc("/upload-acap", handleUploadAcap)
+	http.HandleFunc("/upload-license", handleUploadLicense)
 
 	port := "9876"
 	addr := "127.0.0.1:" + port
@@ -734,4 +736,238 @@ func parseResponse(httpResp *http.Response) (ProxyResponse, error) {
 	}
 
 	return resp, nil
+}
+
+// handleUploadAcap handles ACAP file upload from GitHub to camera
+func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
+	if !setCORSHeaders(w, r) {
+		return
+	}
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		URL      string `json:"url"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		AcapURL  string `json:"acapUrl"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		logger.Printf("Failed to decode upload-acap request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	logger.Printf("Uploading ACAP from %s to %s", payload.AcapURL, payload.URL)
+
+	// Download ACAP file from GitHub
+	acapResp, err := http.Get(payload.AcapURL)
+	if err != nil {
+		logger.Printf("Failed to download ACAP: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to download ACAP: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer acapResp.Body.Close()
+
+	if acapResp.StatusCode != 200 {
+		logger.Printf("GitHub returned error: %d", acapResp.StatusCode)
+		http.Error(w, fmt.Sprintf("GitHub returned error: %d", acapResp.StatusCode), http.StatusInternalServerError)
+		return
+	}
+
+	acapBytes, err := io.ReadAll(acapResp.Body)
+	if err != nil {
+		logger.Printf("Failed to read ACAP: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to read ACAP: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	logger.Printf("Downloaded ACAP, size: %d bytes", len(acapBytes))
+
+	// Create multipart form-data
+	var buf bytes.Buffer
+	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Disposition: form-data; name=\"packfil\"; filename=\"BatonAnalytic.eap\"\r\n")
+	buf.WriteString("Content-Type: application/octet-stream\r\n")
+	buf.WriteString("\r\n")
+	buf.Write(acapBytes)
+	buf.WriteString("\r\n")
+	buf.WriteString("--" + boundary + "--\r\n")
+
+	// Upload to camera with Digest Auth
+	httpReq, err := http.NewRequest("POST", payload.URL, &buf)
+	if err != nil {
+		logger.Printf("Failed to create upload request: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+	// Try Digest auth first
+	uploadResp, err := makeAuthenticatedRequest(httpReq, payload.Username, payload.Password)
+	if err != nil {
+		logger.Printf("Upload failed: %v", err)
+		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer uploadResp.Body.Close()
+
+	uploadBody, _ := io.ReadAll(uploadResp.Body)
+	logger.Printf("Upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
+
+	if uploadResp.StatusCode >= 400 {
+		http.Error(w, string(uploadBody), uploadResp.StatusCode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"status":  uploadResp.StatusCode,
+		"message": "ACAP uploaded successfully",
+	})
+}
+
+// handleUploadLicense handles license XML upload to camera
+func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
+	if !setCORSHeaders(w, r) {
+		return
+	}
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		URL        string `json:"url"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		LicenseXML string `json:"licenseXML"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		logger.Printf("Failed to decode upload-license request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	logger.Printf("Uploading license XML to %s (XML length: %d)", payload.URL, len(payload.LicenseXML))
+
+	// Create multipart form-data with license XML
+	var buf bytes.Buffer
+	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Disposition: form-data; name=\"fileData\"; filename=\"license.xml\"\r\n")
+	buf.WriteString("Content-Type: text/xml\r\n")
+	buf.WriteString("\r\n")
+	buf.WriteString(payload.LicenseXML)
+	buf.WriteString("\r\n")
+	buf.WriteString("--" + boundary + "--\r\n")
+
+	// Upload to camera with Digest Auth
+	httpReq, err := http.NewRequest("POST", payload.URL, &buf)
+	if err != nil {
+		logger.Printf("Failed to create upload request: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+	// Try Digest auth first
+	uploadResp, err := makeAuthenticatedRequest(httpReq, payload.Username, payload.Password)
+	if err != nil {
+		logger.Printf("License upload failed: %v", err)
+		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer uploadResp.Body.Close()
+
+	uploadBody, _ := io.ReadAll(uploadResp.Body)
+	logger.Printf("License upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
+
+	if uploadResp.StatusCode >= 400 {
+		http.Error(w, string(uploadBody), uploadResp.StatusCode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"status":  uploadResp.StatusCode,
+		"message": "License uploaded successfully",
+	})
+}
+
+// makeAuthenticatedRequest handles Digest auth for camera requests
+func makeAuthenticatedRequest(req *http.Request, username, password string) (*http.Response, error) {
+	// First request to get challenge
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != 401 {
+		return resp, nil // No auth needed or success
+	}
+	resp.Body.Close()
+
+	// Parse Digest challenge
+	authHeader := resp.Header.Get("WWW-Authenticate")
+	challenge, err := parseDigestChallenge(authHeader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse auth challenge: %w", err)
+	}
+
+	// Create new request with auth
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, _ = io.ReadAll(req.Body)
+	}
+
+	req2, err := http.NewRequest(req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy headers
+	for k, v := range req.Header {
+		req2.Header[k] = v
+	}
+
+	// Calculate and add Digest auth
+	digestAuth := calculateDigestAuthFromChallenge(&ProxyRequest{
+		URL:      req.URL.String(),
+		Method:   req.Method,
+		Username: username,
+		Password: password,
+	}, challenge)
+
+	req2.Header.Set("Authorization", digestAuth)
+
+	return client.Do(req2)
+}
+
+// calculateDigestAuthFromChallenge calculates Digest auth header
+func calculateDigestAuthFromChallenge(req *ProxyRequest, challenge *DigestChallenge) string {
+	return calculateDigestAuth(req, challenge)
 }
