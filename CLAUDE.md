@@ -442,7 +442,39 @@ anava-camera-extension/
 - They CAN access public internet (httpbin.org)
 - Solution: User-launched proxy server on localhost
 
-### 2. Authentication Pattern Must Match Electron EXACTLY
+### 2. Go HTTP Client Network Routing (CRITICAL)
+**Problem:** Go's default HTTP client may fail to reach local network devices with "dial tcp: connect: no route to host" error, even when:
+- The Mac can ping/curl the devices successfully
+- Routing table is correct
+- No firewall blocking
+
+**Root Cause:** Go's net.Dialer needs explicit configuration to use OS routing properly on macOS with multiple network interfaces.
+
+**Solution:** Always create HTTP clients with explicit net.Dialer:
+```go
+dialer := &net.Dialer{
+    Timeout:   30 * time.Second,
+    KeepAlive: 30 * time.Second,
+    // Don't bind to specific interface - let OS routing table decide
+}
+
+client = &http.Client{
+    Transport: &http.Transport{
+        DialContext:     dialer.DialContext,
+        TLSClientConfig: tlsConfig,
+    },
+    Timeout: 30 * time.Second,
+}
+```
+
+**Do NOT:**
+- Use default http.DefaultClient or &http.Client{} without explicit Transport
+- Hard-code local IP addresses (breaks when user changes networks)
+- Assume Go's default dialer will work on all network configurations
+
+**Key File:** `proxy-server/main.go` lines 228-253
+
+### 3. Authentication Pattern Must Match Electron EXACTLY
 - Source: `/Users/ryanwager/anava-infrastructure-deployer/src/main/services/camera/cameraAuthentication.ts`
 - Step 1: ONE unauthenticated request (3s timeout) - fail fast if no response
 - Step 2: Protocol-based auth only if 401 (HTTPS→Basic first, HTTP→Digest first)
