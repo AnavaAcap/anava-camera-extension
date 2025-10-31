@@ -67,43 +67,72 @@ export class ExtensionConnector {
   }
 
   /**
-   * Connect to the extension and initialize authentication
+   * Connect to the extension and initialize PKCE OAuth authentication
    *
    * This method:
-   * 1. Generates a secure nonce
-   * 2. Stores the nonce in your backend (for verification)
-   * 3. Sends nonce to extension
-   * 4. Extension forwards nonce to native host
-   * 5. Native host authenticates with backend using nonce
-   * 6. Backend verifies nonce and issues session token
+   * 1. Requests PKCE parameters from extension (code_challenge)
+   * 2. Initiates OAuth authorization with code_challenge
+   * 3. User authorizes (OAuth consent)
+   * 4. Receives authorization code
+   * 5. Extension exchanges code + code_verifier for access token
+   * 6. Backend validates code_verifier against stored code_challenge
+   *
+   * See: RFC 7636 (PKCE) and PKCE_MIGRATION.md
    */
   async connectToExtension(config: ExtensionConfig): Promise<void> {
     console.log('[ExtensionConnector] Connecting to extension:', this.extensionId);
 
-    // Step 1: Generate secure nonce
-    const nonce = this.generateNonce();
-    console.log('[ExtensionConnector] Generated nonce');
-
-    // Step 2: Store nonce in backend (for verification)
-    await this.storeNonce(config.backendUrl, config.projectId, nonce);
-    console.log('[ExtensionConnector] Nonce stored in backend');
-
-    // Step 3: Send INITIALIZE_CONNECTION message to extension
-    const response = await this.sendMessage({
+    // Step 1: Request PKCE parameters from extension
+    const pkceResponse = await this.sendMessage({
       command: 'INITIALIZE_CONNECTION',
       payload: {
         backendUrl: config.backendUrl,
-        projectId: config.projectId,
-        nonce: nonce
+        projectId: config.projectId
       }
     });
 
-    if (!response.success) {
-      throw new Error(`Failed to initialize connection: ${response.error}`);
+    if (!pkceResponse.success) {
+      throw new Error(`Failed to initialize connection: ${pkceResponse.error}`);
+    }
+
+    const { codeChallenge, codeChallengeMethod } = pkceResponse.data;
+    console.log('[ExtensionConnector] Received PKCE challenge from extension');
+
+    // Step 2: Initiate OAuth authorization flow
+    const state = this.generateState();
+    const authUrl = this.buildAuthorizationUrl(config.backendUrl, {
+      code_challenge: codeChallenge,
+      code_challenge_method: codeChallengeMethod,
+      state,
+      project_id: config.projectId
+    });
+
+    // Step 3: Open OAuth consent window
+    const authWindow = window.open(
+      authUrl,
+      'OAuth Authorization',
+      'width=500,height=600'
+    );
+
+    // Step 4: Wait for authorization code
+    const authCode = await this.waitForAuthorizationCode(state);
+    console.log('[ExtensionConnector] Received authorization code');
+
+    // Step 5: Send authorization code to extension for token exchange
+    const tokenResponse = await this.sendMessage({
+      command: 'EXCHANGE_CODE',
+      payload: {
+        authorizationCode: authCode,
+        backendUrl: config.backendUrl
+      }
+    });
+
+    if (!tokenResponse.success) {
+      throw new Error(`Token exchange failed: ${tokenResponse.error}`);
     }
 
     this.connected = true;
-    console.log('[ExtensionConnector] Connected successfully');
+    console.log('[ExtensionConnector] Connected successfully with PKCE');
   }
 
   /**
@@ -209,50 +238,76 @@ export class ExtensionConnector {
   }
 
   /**
-   * Generate cryptographically secure nonce
-   * Returns base64-encoded 32-byte random value
+   * Generate cryptographically secure state parameter for OAuth
+   * Prevents CSRF attacks
    */
-  private generateNonce(): string {
+  private generateState(): string {
     const array = new Uint8Array(32);
     crypto.getRandomValues(array);
-    return btoa(String.fromCharCode(...array));
+    return btoa(String.fromCharCode(...array))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
   }
 
   /**
-   * Store nonce in backend for verification
-   *
-   * Your backend should:
-   * 1. Store the nonce with projectId and timestamp
-   * 2. Mark it as unused
-   * 3. Set expiration (e.g., 5 minutes)
-   *
-   * When native host authenticates with the nonce:
-   * 1. Verify nonce exists and hasn't been used
-   * 2. Verify it hasn't expired
-   * 3. Mark as used (prevent replay attacks)
-   * 4. Issue session token
+   * Build OAuth authorization URL with PKCE parameters
    */
-  private async storeNonce(backendUrl: string, projectId: string, nonce: string): Promise<void> {
-    const response = await fetch(`${backendUrl}/api/extension/store-nonce`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        projectId,
-        nonce,
-        timestamp: Date.now()
-      })
+  private buildAuthorizationUrl(backendUrl: string, params: {
+    code_challenge: string;
+    code_challenge_method: string;
+    state: string;
+    project_id: string;
+  }): string {
+    const url = new URL(`${backendUrl}/oauth/authorize`);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', 'anava-local-connector');
+    url.searchParams.set('redirect_uri', 'http://localhost:9876/oauth/callback');
+    url.searchParams.set('code_challenge', params.code_challenge);
+    url.searchParams.set('code_challenge_method', params.code_challenge_method);
+    url.searchParams.set('state', params.state);
+    url.searchParams.set('project_id', params.project_id);
+    return url.toString();
+  }
+
+  /**
+   * Wait for OAuth callback with authorization code
+   * Listens for postMessage from OAuth callback page
+   */
+  private async waitForAuthorizationCode(expectedState: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', messageHandler);
+        reject(new Error('OAuth authorization timeout (5 minutes)'));
+      }, 5 * 60 * 1000); // 5 minutes
+
+      const messageHandler = (event: MessageEvent) => {
+        // Verify origin
+        if (!event.origin.match(/^https?:\/\/(localhost|.*\.anava\.cloud)/)) {
+          return;
+        }
+
+        if (event.data.type === 'OAUTH_CALLBACK') {
+          clearTimeout(timeout);
+          window.removeEventListener('message', messageHandler);
+
+          // Verify state parameter (CSRF protection)
+          if (event.data.state !== expectedState) {
+            reject(new Error('Invalid OAuth state parameter'));
+            return;
+          }
+
+          if (event.data.error) {
+            reject(new Error(`OAuth error: ${event.data.error}`));
+            return;
+          }
+
+          resolve(event.data.code);
+        }
+      };
+
+      window.addEventListener('message', messageHandler);
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to store nonce: ${response.statusText}`);
-    }
-
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(`Failed to store nonce: ${result.error}`);
-    }
   }
 
   /**
@@ -266,65 +321,196 @@ export class ExtensionConnector {
 }
 
 /**
- * Example backend endpoint implementations (Express.js)
+ * Example backend OAuth endpoint implementations (Express.js + PKCE)
  *
  * Place these in your backend API:
  */
 
 /*
-// Store nonce endpoint
-app.post('/api/extension/store-nonce', async (req, res) => {
-  const { projectId, nonce, timestamp } = req.body;
+import crypto from 'crypto';
+import { promisify } from 'util';
 
-  // Store in database with 5-minute expiration
-  await db.nonces.create({
-    projectId,
-    nonce,
-    timestamp,
-    used: false,
-    expiresAt: new Date(Date.now() + 5 * 60 * 1000) // 5 minutes
+const randomBytes = promisify(crypto.randomBytes);
+
+// OAuth Authorization Endpoint
+app.get('/oauth/authorize', async (req, res) => {
+  const {
+    response_type,
+    client_id,
+    redirect_uri,
+    code_challenge,
+    code_challenge_method,
+    state,
+    project_id
+  } = req.query;
+
+  // Validate parameters
+  if (response_type !== 'code') {
+    return res.status(400).json({ error: 'unsupported_response_type' });
+  }
+
+  if (code_challenge_method !== 'S256') {
+    return res.status(400).json({ error: 'invalid_request',
+      error_description: 'code_challenge_method must be S256' });
+  }
+
+  if (client_id !== 'anava-local-connector') {
+    return res.status(400).json({ error: 'invalid_client' });
+  }
+
+  // Generate authorization code
+  const authCode = (await randomBytes(32)).toString('base64url');
+
+  // Store code_challenge with authorization code (10 minute expiration)
+  await db.authCodes.create({
+    code: authCode,
+    project_id,
+    code_challenge,
+    code_challenge_method,
+    redirect_uri,
+    created_at: new Date(),
+    expires_at: new Date(Date.now() + 10 * 60 * 1000)
   });
 
-  res.json({ success: true });
+  // Redirect to consent page (or auto-approve for trusted clients)
+  // For demo, we'll auto-approve and redirect with code
+  const callbackUrl = new URL(redirect_uri);
+  callbackUrl.searchParams.set('code', authCode);
+  callbackUrl.searchParams.set('state', state);
+
+  res.redirect(callbackUrl.toString());
 });
 
-// Authenticate with nonce endpoint
-app.post('/api/extension/authenticate', async (req, res) => {
-  const nonce = req.headers['x-companion-nonce'];
-  const projectId = req.headers['x-project-id'];
+// OAuth Token Endpoint (PKCE Validation)
+app.post('/oauth/token', async (req, res) => {
+  const {
+    grant_type,
+    code,
+    code_verifier,
+    client_id,
+    redirect_uri
+  } = req.body;
 
-  // Verify nonce
-  const nonceRecord = await db.nonces.findOne({ projectId, nonce });
-
-  if (!nonceRecord) {
-    return res.status(401).json({ success: false, error: 'Invalid nonce' });
+  // Validate grant type
+  if (grant_type !== 'authorization_code') {
+    return res.status(400).json({ error: 'unsupported_grant_type' });
   }
 
-  if (nonceRecord.used) {
-    return res.status(401).json({ success: false, error: 'Nonce already used' });
+  // Get stored authorization code
+  const authCodeRecord = await db.authCodes.findOne({ code });
+
+  if (!authCodeRecord) {
+    return res.status(400).json({ error: 'invalid_grant' });
   }
 
-  if (new Date() > nonceRecord.expiresAt) {
-    return res.status(401).json({ success: false, error: 'Nonce expired' });
+  // Check expiration
+  if (new Date() > authCodeRecord.expires_at) {
+    await db.authCodes.deleteOne({ code });
+    return res.status(400).json({ error: 'invalid_grant',
+      error_description: 'Authorization code expired' });
   }
 
-  // Mark nonce as used (prevent replay attacks)
-  await db.nonces.update({ _id: nonceRecord._id }, { used: true });
+  // Verify PKCE code_verifier
+  const computedChallenge = crypto
+    .createHash('sha256')
+    .update(code_verifier)
+    .digest('base64url');
 
-  // Generate session token
-  const sessionToken = generateSecureToken(); // Your implementation
+  if (computedChallenge !== authCodeRecord.code_challenge) {
+    return res.status(400).json({ error: 'invalid_grant',
+      error_description: 'Invalid code_verifier' });
+  }
 
-  // Store session
-  await db.sessions.create({
-    projectId,
-    sessionToken,
-    createdAt: new Date(),
-    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
+  // Verify redirect_uri matches
+  if (redirect_uri !== authCodeRecord.redirect_uri) {
+    return res.status(400).json({ error: 'invalid_grant',
+      error_description: 'Redirect URI mismatch' });
+  }
+
+  // Delete authorization code (single-use)
+  await db.authCodes.deleteOne({ code });
+
+  // Generate access token and refresh token
+  const accessToken = (await randomBytes(32)).toString('base64url');
+  const refreshToken = (await randomBytes(32)).toString('base64url');
+
+  // Store tokens
+  await db.tokens.create({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    project_id: authCodeRecord.project_id,
+    created_at: new Date(),
+    expires_at: new Date(Date.now() + 1 * 60 * 60 * 1000) // 1 hour
   });
 
   res.json({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_type: 'Bearer',
+    expires_in: 3600 // 1 hour
+  });
+});
+
+// OAuth Callback Page (HTML)
+// Served at http://localhost:9876/oauth/callback
+// This page receives the authorization code and posts it back to the parent window
+app.get('/oauth/callback', (req, res) => {
+  const { code, state, error } = req.query;
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Authorization Complete</title>
+    </head>
+    <body>
+      <h2>Authorization ${error ? 'Failed' : 'Successful'}</h2>
+      <p>${error ? 'Error: ' + error : 'You can close this window.'}</p>
+      <script>
+        // Send code back to parent window
+        if (window.opener) {
+          window.opener.postMessage({
+            type: 'OAUTH_CALLBACK',
+            code: '${code}',
+            state: '${state}',
+            error: '${error || ''}'
+          }, '*');
+
+          // Close window after 2 seconds
+          setTimeout(() => window.close(), 2000);
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// Protected API endpoint (validates access token)
+app.get('/api/protected-resource', async (req, res) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const accessToken = authHeader.substring(7);
+
+  // Validate token
+  const tokenRecord = await db.tokens.findOne({ access_token: accessToken });
+
+  if (!tokenRecord) {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+
+  if (new Date() > tokenRecord.expires_at) {
+    return res.status(401).json({ error: 'token_expired' });
+  }
+
+  // Token is valid
+  res.json({
     success: true,
-    sessionToken
+    project_id: tokenRecord.project_id,
+    data: { ... }
   });
 });
 */
