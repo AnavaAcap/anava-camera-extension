@@ -1,0 +1,61 @@
+#!/bin/bash
+# postinstall script for Anava Local Connector
+# This script runs after the package is installed
+
+set -e
+
+# Get the current user (not root, since installer runs as user)
+CURRENT_USER="${USER}"
+USER_HOME=$(eval echo "~${CURRENT_USER}")
+
+echo "Installing Anava Local Connector for user: ${CURRENT_USER}"
+echo "User home directory: ${USER_HOME}"
+
+# Replace USERNAME placeholders with actual username
+NATIVE_MESSAGING_HOST="${USER_HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anava.local_connector.json"
+LAUNCH_AGENT="${USER_HOME}/Library/LaunchAgents/com.anava.local_connector.plist"
+BINARY_PATH="${USER_HOME}/Applications/AnavaLocalConnector/local-connector"
+
+# Create directories if they don't exist
+mkdir -p "${USER_HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+mkdir -p "${USER_HOME}/Library/LaunchAgents"
+mkdir -p "${USER_HOME}/Applications/AnavaLocalConnector"
+mkdir -p "${USER_HOME}/Library/Logs"
+
+# Fix the native messaging host manifest
+if [ -f "${NATIVE_MESSAGING_HOST}" ]; then
+    sed -i '' "s|/Users/USERNAME|${USER_HOME}|g" "${NATIVE_MESSAGING_HOST}"
+    echo "Updated native messaging host manifest"
+fi
+
+# Fix the LaunchAgent plist
+if [ -f "${LAUNCH_AGENT}" ]; then
+    sed -i '' "s|/Users/USERNAME|${USER_HOME}|g" "${LAUNCH_AGENT}"
+    echo "Updated LaunchAgent plist"
+fi
+
+# Set executable permission on binary
+chmod +x "${BINARY_PATH}"
+echo "Set executable permission on binary"
+
+# Load the LaunchAgent (start proxy service)
+launchctl unload "${LAUNCH_AGENT}" 2>/dev/null || true
+launchctl load "${LAUNCH_AGENT}"
+echo "Loaded LaunchAgent - proxy service is now running"
+
+# Wait a moment for service to start
+sleep 2
+
+# Verify service is running
+if curl -s http://127.0.0.1:9876/health > /dev/null 2>&1; then
+    echo "✓ Proxy service is running successfully"
+else
+    echo "⚠ Warning: Proxy service may not have started correctly"
+fi
+
+echo "Installation complete!"
+echo ""
+echo "The Anava Local Connector has been installed and started."
+echo "You can now use the Chrome extension to deploy cameras on your local network."
+
+exit 0

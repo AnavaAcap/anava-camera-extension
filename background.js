@@ -3,6 +3,10 @@
  * Simplified version without ES module imports
  */
 
+// Version requirements
+const REQUIRED_NATIVE_VERSION = "2.0.0";
+const NATIVE_HOST_ID = "com.anava.local_connector";
+
 // Allowed origins for security
 const ALLOWED_ORIGINS = [
   'http://localhost:5173',
@@ -25,6 +29,12 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
   // Route commands to appropriate handlers
   switch (message.command) {
+    case 'INITIALIZE_CONNECTION':
+      handleInitializeConnection(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
     case 'health_check':
       handleHealthCheck()
         .then(result => sendResponse({ success: true, data: result }))
@@ -79,6 +89,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
   }
 });
+
+/**
+ * Initialize connection from web app
+ * Web app provides backend URL, project ID, and nonce for authentication
+ */
+async function handleInitializeConnection(payload) {
+  const { backendUrl, projectId, nonce } = payload;
+
+  console.log('[Background] Initializing connection for project:', projectId);
+
+  try {
+    // Store configuration in local storage
+    await chrome.storage.local.set({
+      backendUrl,
+      projectId,
+      nonce,
+      connectedAt: Date.now()
+    });
+
+    console.log('[Background] Configuration stored');
+
+    // Forward configuration to native host
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST_ID,
+        {
+          type: 'CONFIGURE',
+          backendUrl,
+          projectId,
+          nonce
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    console.log('[Background] Native host configured:', response);
+
+    return {
+      configured: true,
+      projectId,
+      timestamp: Date.now()
+    };
+
+  } catch (error) {
+    console.error('[Background] Failed to initialize connection:', error);
+    throw new Error(`Connection initialization failed: ${error.message}`);
+  }
+}
 
 /**
  * Health check - verify proxy server is running
@@ -816,5 +880,108 @@ async function handleCheckLaunchAgent() {
     return false;
   }
 }
+
+/**
+ * Check native host version
+ */
+async function checkNativeVersion() {
+  try {
+    console.log('[Background] Checking native host version...');
+
+    // Send GET_VERSION message to native host
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST_ID,
+        { type: 'GET_VERSION' },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    if (!response || !response.version) {
+      throw new Error('No version in response');
+    }
+
+    const nativeVersion = response.version;
+    console.log('[Background] Native host version:', nativeVersion);
+    console.log('[Background] Required version:', REQUIRED_NATIVE_VERSION);
+
+    if (nativeVersion !== REQUIRED_NATIVE_VERSION) {
+      console.warn('[Background] Version mismatch detected!');
+
+      // Set badge to indicate update needed
+      chrome.action.setBadgeText({ text: '!' });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF9800' }); // Orange
+
+      // Store version mismatch info
+      chrome.storage.local.set({
+        nativeVersionMismatch: true,
+        currentNativeVersion: nativeVersion,
+        requiredNativeVersion: REQUIRED_NATIVE_VERSION
+      });
+
+      return false;
+    }
+
+    // Version matches - clear any previous warnings
+    chrome.action.setBadgeText({ text: '' });
+    chrome.storage.local.set({
+      nativeVersionMismatch: false,
+      currentNativeVersion: nativeVersion
+    });
+
+    console.log('[Background] Version check passed');
+    return true;
+
+  } catch (error) {
+    console.error('[Background] Native host not responding:', error.message);
+
+    // Native host not installed or not responding
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#F44336' }); // Red
+
+    chrome.storage.local.set({
+      nativeNotInstalled: true,
+      nativeVersionMismatch: false
+    });
+
+    return false;
+  }
+}
+
+/**
+ * Listen for extension installation/update
+ */
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('[Background] Extension installed/updated:', details.reason);
+
+  // Check native version on install/update
+  checkNativeVersion();
+});
+
+/**
+ * Listen for browser startup
+ */
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[Background] Browser started');
+
+  // Check native version on startup
+  checkNativeVersion();
+});
+
+/**
+ * Periodic version check (every 5 minutes)
+ */
+setInterval(() => {
+  checkNativeVersion();
+}, 5 * 60 * 1000); // 5 minutes
+
+// Initial version check on script load
+checkNativeVersion();
 
 console.log('[Background] Anava Local Network Bridge initialized');

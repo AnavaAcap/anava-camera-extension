@@ -1,0 +1,11 @@
+Package: anava-local-connector
+Version: 2.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Anava Technologies <support@anava.cloud>
+Description: Anava Local Connector for Chrome Extension
+ Provides local network access for camera deployment and management.
+ This connector enables the Anava Chrome extension to communicate with
+ cameras on your local network without browser security restrictions.
+Depends: libc6 (>= 2.31)

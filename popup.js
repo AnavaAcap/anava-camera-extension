@@ -221,6 +221,50 @@ function updateConnectionStatus(proxyConnected, webAppConnected) {
 }
 
 /**
+ * Check for version issues
+ */
+async function checkVersionIssues() {
+  try {
+    const data = await chrome.storage.local.get([
+      'nativeVersionMismatch',
+      'nativeNotInstalled',
+      'currentNativeVersion',
+      'requiredNativeVersion'
+    ]);
+
+    if (data.nativeNotInstalled) {
+      // Show "not installed" warning
+      const statusDescription = document.getElementById('status-description');
+      statusDescription.innerHTML = '<strong>Native connector not installed</strong>';
+      statusDescription.style.color = '#F44336';
+      return;
+    }
+
+    if (data.nativeVersionMismatch) {
+      // Show version mismatch warning
+      const statusDescription = document.getElementById('status-description');
+      statusDescription.innerHTML = `
+        <strong>Update Required</strong><br>
+        <small>Current: v${data.currentNativeVersion || 'unknown'}</small><br>
+        <small>Required: v${data.requiredNativeVersion || 'unknown'}</small>
+      `;
+      statusDescription.style.color = '#FF9800';
+
+      // Update instructions to show update guidance
+      setupInstructions.style.display = 'block';
+      const instructionsText = document.getElementById('instructions-text');
+      instructionsText.innerHTML = `
+        <p><strong>An update is required for the local connector.</strong></p>
+        <p>Download and install the latest version from:</p>
+        <p><a href="https://connect.anava.cloud/install?reason=update_required&current=${data.currentNativeVersion}" target="_blank">https://connect.anava.cloud/install</a></p>
+      `;
+    }
+  } catch (error) {
+    console.error('Error checking version issues:', error);
+  }
+}
+
+/**
  * Initialize popup
  */
 async function initialize() {
@@ -230,6 +274,9 @@ async function initialize() {
 
   // Set web app URL
   openWebAppBtn.href = WEB_APP_URL;
+
+  // Check for version issues first
+  await checkVersionIssues();
 
   // Check both proxy server and web app
   console.log('Checking connections...');

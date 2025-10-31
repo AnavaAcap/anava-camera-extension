@@ -1,0 +1,9 @@
+{
+  "name": "com.anava.local_connector",
+  "description": "Anava Local Connector for camera network access",
+  "path": "%LOCALAPPDATA%\\Anava\\LocalConnector\\local-connector.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://PLACEHOLDER_EXTENSION_ID/"
+  ]
+}

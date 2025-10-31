@@ -16,7 +16,8 @@
       "http://localhost:5173/*",
       "http://localhost:3000/*",
       "https://anava-ai.web.app/*",
-      "https://anava-ai.firebaseapp.com/*"
+      "https://anava-ai.firebaseapp.com/*",
+      "https://*.anava.cloud/*"
     ],
     "accepts_tls_channel_id": false
   },
