@@ -255,11 +255,17 @@ async function checkCamera(ip, credentials) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: `https://${ip}/axis-cgi/param.cgi`,
+        url: `https://${ip}/axis-cgi/basicdeviceinfo.cgi`,
         method: 'POST',
         username: credentials.username,
         password: credentials.password,
-        data: 'action=list&group=root.Properties'
+        body: {
+          apiVersion: '1.0',
+          method: 'getProperties',
+          params: {
+            propertyList: ['Brand', 'ProdType', 'ProdNbr', 'ProdFullName', 'SerialNumber']
+          }
+        }
       }),
       signal: AbortSignal.timeout(3000)  // 3 second timeout
     });
@@ -267,7 +273,9 @@ async function checkCamera(ip, credentials) {
     if (!response.ok) return null;
 
     const result = await response.json();
-    const data = parseParamCgiResponse(result.data || result);
+
+    // Parse basicdeviceinfo.cgi response: result.data.data.propertyList
+    const data = result.data?.data?.propertyList || {};
 
     // Validate it's an Axis device
     if (!data.Brand || !data.Brand.toLowerCase().includes('axis')) {
@@ -276,16 +284,13 @@ async function checkCamera(ip, credentials) {
 
     return {
       ip,
-      model: data.ProdFullName || data.ProdShortName || 'Unknown',
+      model: data.ProdFullName || data.ProdShortName || data.ProdNbr || 'Unknown',
       manufacturer: data.Brand || 'Axis',
       serialNumber: data.SerialNumber || 'Unknown',
-      firmware: data.Version || 'Unknown',
-      socType: extractSocType(data.Soc),
-      architecture: data.Architecture || 'aarch64',
-      deviceId: (data.SerialNumber || '').replace(/:/g, ''),  // MAC without colons
-      deviceType: 'camera',
-      hardwareId: data.HardwareID,
-      buildDate: data.BuildDate
+      productNumber: data.ProdNbr,
+      productType: data.ProdType,
+      deviceId: data.SerialNumber,
+      deviceType: 'camera'
     };
   } catch (error) {
     return null;

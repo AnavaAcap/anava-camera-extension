@@ -5,7 +5,6 @@
   "description": "Connect to local network cameras from your browser. Requires companion app installation.",
   "permissions": [
     "nativeMessaging",
-    "offscreen",
     "storage"
   ],
   "host_permissions": [
@@ -30,13 +29,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["dist/content-script.js"],
-      "run_at": "document_end"
-    }
-  ],
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
