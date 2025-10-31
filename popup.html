@@ -101,6 +101,14 @@
         <div id="instructions-text" class="alert-message">
           <p>Checking connection status...</p>
         </div>
+        <!-- Start Proxy Button (shown when proxy is not running) -->
+        <button id="start-proxy-btn" class="btn-secondary" style="display: none; margin-top: 12px;">
+          <svg class="btn-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M5 3L12 8L5 13V3Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="currentColor"/>
+          </svg>
+          <span id="start-proxy-text">Start Proxy Server</span>
+        </button>
+        <div id="start-proxy-status" class="status-message" style="display: none; margin-top: 8px;"></div>
       </div>
     </div>
 

@@ -19,6 +19,9 @@ const webAppStatus = document.getElementById('web-app-status');
 const extensionIdEl = document.getElementById('extension-id');
 const openWebAppBtn = document.getElementById('open-web-app');
 const setupInstructions = document.getElementById('setup-instructions');
+const startProxyBtn = document.getElementById('start-proxy-btn');
+const startProxyText = document.getElementById('start-proxy-text');
+const startProxyStatusEl = document.getElementById('start-proxy-status');
 
 /**
  * Check if proxy server is running
@@ -57,6 +60,70 @@ async function checkWebApp() {
   } catch (error) {
     console.log('Web app check failed:', error.message);
     return false;
+  }
+}
+
+/**
+ * Check if LaunchAgent is installed (proxy auto-start configured)
+ */
+async function checkLaunchAgentInstalled() {
+  try {
+    // Send message to background script to check LaunchAgent file
+    const response = await chrome.runtime.sendMessage({
+      command: 'check_launch_agent'
+    });
+    return response && response.installed === true;
+  } catch (error) {
+    console.log('LaunchAgent check failed:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Start proxy server via background script
+ */
+async function startProxyServer() {
+  try {
+    startProxyBtn.disabled = true;
+    startProxyText.textContent = 'Starting...';
+    startProxyStatusEl.style.display = 'block';
+    startProxyStatusEl.className = 'status-message info';
+    startProxyStatusEl.textContent = 'Installing proxy server...';
+
+    // Send message to background script to run install script
+    const response = await chrome.runtime.sendMessage({
+      command: 'install_proxy'
+    });
+
+    if (response && response.success) {
+      startProxyStatusEl.className = 'status-message success';
+      startProxyStatusEl.textContent = '✓ Proxy server installed and started successfully!';
+
+      // Wait 2 seconds then recheck status
+      setTimeout(async () => {
+        const proxyConnected = await checkProxyServer();
+        if (proxyConnected) {
+          const webAppConnected = await checkWebApp();
+          updateConnectionStatus(proxyConnected, webAppConnected);
+        } else {
+          startProxyStatusEl.className = 'status-message error';
+          startProxyStatusEl.textContent = '⚠ Installation completed but proxy is not responding. Try restarting your computer.';
+        }
+        startProxyBtn.disabled = false;
+        startProxyText.textContent = 'Start Proxy Server';
+      }, 2000);
+    } else {
+      startProxyStatusEl.className = 'status-message error';
+      startProxyStatusEl.textContent = `✗ Installation failed: ${response?.error || 'Unknown error'}`;
+      startProxyBtn.disabled = false;
+      startProxyText.textContent = 'Retry Installation';
+    }
+  } catch (error) {
+    console.error('Failed to start proxy:', error);
+    startProxyStatusEl.className = 'status-message error';
+    startProxyStatusEl.textContent = `✗ Error: ${error.message}`;
+    startProxyBtn.disabled = false;
+    startProxyText.textContent = 'Retry Installation';
   }
 }
 
@@ -102,6 +169,7 @@ function updateConnectionStatus(proxyConnected, webAppConnected) {
     statusDescription.textContent = 'All systems operational';
     setupInstructions.style.display = 'none';
     openWebAppBtn.disabled = false;
+    startProxyBtn.style.display = 'none';
   } else if (partialConnection) {
     // YELLOW - Partial connection
     statusDot.className = 'status-dot partial';
@@ -114,19 +182,23 @@ function updateConnectionStatus(proxyConnected, webAppConnected) {
     if (!proxyConnected) {
       instructionsText.innerHTML = `
         <p><strong>Proxy server is not running.</strong> The web app is reachable, but you won't be able to deploy cameras without the local proxy.</p>
-        <ol>
+        <p>Click the button below to automatically install and start the proxy server, or run manually:</p>
+        <ol style="margin: 8px 0; padding-left: 20px; font-size: 12px;">
+          <li>Open Terminal</li>
+          <li>Navigate to extension folder</li>
           <li>Run: <code>./install-proxy.sh</code></li>
-          <li>Verify: <code>curl http://127.0.0.1:9876/health</code></li>
         </ol>
       `;
+      startProxyBtn.style.display = 'flex';
     } else {
       instructionsText.innerHTML = `
         <p><strong>Web app is not reachable.</strong> The proxy server is running, but you need the web interface to deploy cameras.</p>
-        <ol>
+        <ol style="margin: 8px 0; padding-left: 20px; font-size: 12px;">
           <li>Check your internet connection</li>
           <li>Try opening <a href="${WEB_APP_URL}" target="_blank">${WEB_APP_URL}</a> in a new tab</li>
         </ol>
       `;
+      startProxyBtn.style.display = 'none';
     }
 
     openWebAppBtn.disabled = !webAppConnected; // Enable button only if web app is reachable
@@ -140,14 +212,10 @@ function updateConnectionStatus(proxyConnected, webAppConnected) {
     const instructionsText = document.getElementById('instructions-text');
     instructionsText.innerHTML = `
       <p><strong>Both proxy server and web app are unreachable.</strong></p>
-      <ol>
-        <li>Check your internet connection</li>
-        <li>Install proxy: <code>./install-proxy.sh</code></li>
-        <li>Verify proxy: <code>curl http://127.0.0.1:9876/health</code></li>
-        <li>Try opening <a href="${WEB_APP_URL}" target="_blank">${WEB_APP_URL}</a></li>
-      </ol>
+      <p>Click the button below to automatically install the proxy server:</p>
     `;
 
+    startProxyBtn.style.display = 'flex';
     openWebAppBtn.disabled = true;
   }
 }
@@ -190,6 +258,14 @@ async function initialize() {
  */
 openWebAppBtn.addEventListener('click', (e) => {
   console.log('Opening web app at:', WEB_APP_URL);
+});
+
+/**
+ * Handle start proxy button click
+ */
+startProxyBtn.addEventListener('click', () => {
+  console.log('User clicked start proxy button');
+  startProxyServer();
 });
 
 // Initialize on load

@@ -26,23 +26,13 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 2: Bundle background script with esbuild
-  console.log('2️⃣  Bundling background script...');
+  // Step 2: Copy background script (using root background.js, not TypeScript)
+  console.log('2️⃣  Copying background script...');
   try {
-    await esbuild.build({
-      entryPoints: ['src/background.ts'],
-      bundle: true,
-      outfile: 'dist/background.js',
-      format: 'iife', // Immediately Invoked Function Expression (no modules)
-      platform: 'browser',
-      target: 'es2020',
-      sourcemap: false,
-      minify: false, // Keep readable for debugging
-      globalName: 'AnavaBridge'
-    });
-    console.log('✅ Background script bundled\n');
+    fs.copyFileSync('background.js', 'dist/background.js');
+    console.log('✅ Background script copied\n');
   } catch (error) {
-    console.error('❌ Bundle failed:', error);
+    console.error('❌ Copy failed:', error);
     process.exit(1);
   }
 
@@ -53,7 +43,8 @@ async function build() {
     'popup.html',
     'popup.css',
     'popup.js',
-    'rules.json'
+    'rules.json',
+    'license-worker.html'
   ];
 
   try {
