@@ -5,8 +5,44 @@ on:
     tags:
       - 'v*.*.*'
 
+# Prevent concurrent releases
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # Pre-flight validation
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version tag format: $TAG"
+            echo "Expected format: v1.2.3"
+            exit 1
+          fi
+          echo "✅ Valid version tag: $TAG"
+
+      - name: Check for changelog entry
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ -f CHANGELOG.md ]; then
+            if ! grep -q "$TAG" CHANGELOG.md; then
+              echo "⚠️ Warning: No changelog entry found for $TAG"
+            else
+              echo "✅ Changelog entry found for $TAG"
+            fi
+          else
+            echo "⚠️ No CHANGELOG.md found"
+          fi
+
   build-binaries:
+    needs: validate
     strategy:
       matrix:
         include:
@@ -218,6 +254,25 @@ jobs:
 
       - name: List artifacts
         run: ls -R
+
+      - name: Verify all artifacts exist
+        run: |
+          echo "Verifying required release artifacts..."
+
+          # Check macOS installer
+          test -f macos-installer/AnavaLocalConnector.pkg || (echo "❌ macOS installer missing" && exit 1)
+
+          # Check Windows installer
+          test -f windows-installer/AnavaLocalConnector.msi || (echo "❌ Windows installer missing" && exit 1)
+
+          # Check Linux packages
+          ls linux-packages/*.deb > /dev/null 2>&1 || (echo "❌ DEB package missing" && exit 1)
+          ls linux-packages/*.rpm > /dev/null 2>&1 || (echo "❌ RPM package missing" && exit 1)
+
+          # Check extension zip
+          ls extension-zip/*.zip > /dev/null 2>&1 || (echo "❌ Extension zip missing" && exit 1)
+
+          echo "✅ All required artifacts present"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1

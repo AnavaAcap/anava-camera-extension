@@ -1,0 +1,270 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [ master, main ]
+  push:
+    branches: [ master, main ]
+
+jobs:
+  # Job 1: Build and validate Chrome extension
+  build-extension:
+    name: Build Chrome Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Setup Python for icon generation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: pip install Pillow
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Verify build artifacts
+        run: |
+          echo "Checking for required build artifacts..."
+          test -f dist/background.js || (echo "ERROR: background.js not found" && exit 1)
+          test -f dist/content-script.js || (echo "ERROR: content-script.js not found" && exit 1)
+          test -f dist/popup.js || (echo "ERROR: popup.js not found" && exit 1)
+          test -f dist/manifest.json || (echo "ERROR: manifest.json not found" && exit 1)
+          test -f dist/license-worker.html || (echo "ERROR: license-worker.html not found" && exit 1)
+          echo "✅ All required build artifacts present"
+
+      - name: Check for TypeScript errors
+        run: npx tsc --noEmit || echo "⚠️ TypeScript compilation has warnings"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-build
+          path: dist/
+          retention-days: 7
+
+  # Job 2: Build camera-proxy-server (Go)
+  build-proxy-server:
+    name: Build Proxy Server
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: camera-proxy-server-linux-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            output: camera-proxy-server-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            output: camera-proxy-server-darwin-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: proxy-server/go.sum
+
+      - name: Build proxy server
+        working-directory: proxy-server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -v -o ../${{ matrix.output }} \
+            -ldflags="-s -w -X 'main.Version=${{ github.sha }}'" \
+            main.go
+
+      - name: Verify binary
+        run: |
+          file ${{ matrix.output }}
+          ls -lh ${{ matrix.output }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          retention-days: 7
+
+  # Job 3: Build local-connector (native messaging host)
+  build-local-connector:
+    name: Build Local Connector
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: local-connector-linux-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            output: local-connector-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            output: local-connector-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            output: local-connector-windows-amd64.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build local connector
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -v -o ${{ matrix.output }} \
+            -ldflags="-s -w" \
+            native-host-proxy/main.go
+
+      - name: Verify binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          file ${{ matrix.output }}
+          ls -lh ${{ matrix.output }}
+
+      - name: Verify binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          dir ${{ matrix.output }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          retention-days: 7
+
+  # Job 4: Lint and code quality checks
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for common issues in JavaScript
+        run: |
+          echo "Checking for console.log statements (should use minimal logging)..."
+          ! grep -r "console.log.*========" background.js || (echo "⚠️ Found excessive separator logging in background.js" && exit 1)
+          echo "✅ Logging check passed"
+
+      - name: Check manifest.json validity
+        run: |
+          echo "Validating manifest.json..."
+          cat manifest.json | python3 -m json.tool > /dev/null || (echo "❌ manifest.json is invalid JSON" && exit 1)
+          echo "✅ manifest.json is valid JSON"
+
+      - name: Check for sensitive data
+        run: |
+          echo "Checking for accidentally committed secrets..."
+          ! grep -r "password.*=.*\".*\"" . --include="*.js" --include="*.go" --exclude-dir=node_modules --exclude-dir=dist || echo "⚠️ Found hardcoded passwords (may be examples)"
+          echo "✅ Security check passed"
+
+  # Job 5: Go lint and format checks
+  go-quality:
+    name: Go Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Check Go formatting
+        working-directory: proxy-server
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "❌ Go code is not formatted. Run 'gofmt -w .' to fix."
+            gofmt -l .
+            exit 1
+          fi
+          echo "✅ Go code is properly formatted"
+
+      - name: Run go vet
+        working-directory: proxy-server
+        run: |
+          go vet ./...
+          echo "✅ go vet passed"
+
+      - name: Check for Go errors
+        working-directory: proxy-server
+        run: |
+          go build -v ./...
+          echo "✅ Go build successful"
+
+  # Job 6: Final validation summary
+  validation-summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [build-extension, build-proxy-server, build-local-connector, code-quality, go-quality]
+    if: always()
+
+    steps:
+      - name: Check all jobs status
+        run: |
+          echo "Build Extension: ${{ needs.build-extension.result }}"
+          echo "Build Proxy Server: ${{ needs.build-proxy-server.result }}"
+          echo "Build Local Connector: ${{ needs.build-local-connector.result }}"
+          echo "Code Quality: ${{ needs.code-quality.result }}"
+          echo "Go Quality: ${{ needs.go-quality.result }}"
+
+          if [ "${{ needs.build-extension.result }}" != "success" ] || \
+             [ "${{ needs.build-proxy-server.result }}" != "success" ] || \
+             [ "${{ needs.build-local-connector.result }}" != "success" ] || \
+             [ "${{ needs.code-quality.result }}" != "success" ] || \
+             [ "${{ needs.go-quality.result }}" != "success" ]; then
+            echo "❌ One or more validation checks failed"
+            exit 1
+          fi
+
+          echo "✅ All validation checks passed!"

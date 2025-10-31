@@ -81,7 +81,9 @@ async function build() {
     'popup.html',
     'popup.css',
     'rules.json',
-    'license-worker.html'
+    'license-worker.html',
+    'license-worker.js',
+    'axis-sdk.js'
   ];
 
   try {

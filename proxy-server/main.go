@@ -806,39 +806,33 @@ func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Printf("========================================")
-	logger.Printf("ACAP UPLOAD STARTED")
-	logger.Printf("Source: %s", payload.AcapURL)
-	logger.Printf("Target: %s", payload.URL)
-	logger.Printf("========================================")
+	logger.Printf("ACAP upload started: %s -> camera", payload.AcapURL)
 
 	// Download ACAP file from GitHub
-	logger.Printf("Step 1/3: Downloading ACAP from GitHub...")
 	acapResp, err := http.Get(payload.AcapURL)
 	if err != nil {
-		logger.Printf("❌ Failed to download ACAP: %v", err)
+		logger.Printf("Failed to download ACAP: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to download ACAP: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer acapResp.Body.Close()
 
 	if acapResp.StatusCode != 200 {
-		logger.Printf("❌ GitHub returned error: %d", acapResp.StatusCode)
+		logger.Printf("GitHub returned error: %d", acapResp.StatusCode)
 		http.Error(w, fmt.Sprintf("GitHub returned error: %d", acapResp.StatusCode), http.StatusInternalServerError)
 		return
 	}
 
 	acapBytes, err := io.ReadAll(acapResp.Body)
 	if err != nil {
-		logger.Printf("❌ Failed to read ACAP: %v", err)
+		logger.Printf("Failed to read ACAP: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to read ACAP: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	logger.Printf("✅ ACAP downloaded successfully (%d bytes = %.2f MB)", len(acapBytes), float64(len(acapBytes))/1024/1024)
+	logger.Printf("ACAP downloaded (%.2f MB), uploading to camera...", float64(len(acapBytes))/1024/1024)
 
 	// Create multipart form-data
-	logger.Printf("Step 2/3: Creating multipart form data...")
 	var buf bytes.Buffer
 	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
 
@@ -852,13 +846,11 @@ func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
 
 	// CRITICAL FIX: Store body bytes for reuse during authentication
 	bodyBytes := buf.Bytes()
-	logger.Printf("✅ Multipart form-data created (total size: %d bytes = %.2f MB)", len(bodyBytes), float64(len(bodyBytes))/1024/1024)
 
 	// Upload to camera with Digest Auth
-	logger.Printf("Step 3/3: Uploading to camera (this may take 60-120 seconds)...")
 	httpReq, err := http.NewRequest("POST", payload.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		logger.Printf("❌ Failed to create upload request: %v", err)
+		logger.Printf("Failed to create upload request: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -869,24 +861,21 @@ func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
 	// IMPORTANT: Use uploadClient (3 min timeout) instead of client (30s timeout)
 	uploadResp, err := makeAuthenticatedRequestWithBodyAndClient(httpReq, payload.Username, payload.Password, bodyBytes, uploadClient)
 	if err != nil {
-		logger.Printf("❌ Upload failed: %v", err)
+		logger.Printf("Upload failed: %v", err)
 		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer uploadResp.Body.Close()
 
 	uploadBody, _ := io.ReadAll(uploadResp.Body)
-	logger.Printf("Upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
 
 	if uploadResp.StatusCode >= 400 {
-		logger.Printf("❌ Camera rejected upload (HTTP %d)", uploadResp.StatusCode)
+		logger.Printf("Camera rejected upload (HTTP %d): %s", uploadResp.StatusCode, string(uploadBody))
 		http.Error(w, string(uploadBody), uploadResp.StatusCode)
 		return
 	}
 
-	logger.Printf("========================================")
-	logger.Printf("✅ ACAP UPLOAD SUCCESSFUL!")
-	logger.Printf("========================================")
+	logger.Printf("✅ ACAP upload successful")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -925,11 +914,7 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Printf("========================================")
-	logger.Printf("LICENSE UPLOAD STARTED")
-	logger.Printf("Target: %s", payload.URL)
-	logger.Printf("License XML length: %d bytes", len(payload.LicenseXML))
-	logger.Printf("========================================")
+	logger.Printf("License upload started (%d bytes)", len(payload.LicenseXML))
 
 	// Create multipart form-data with license XML
 	// CRITICAL: Match EXACT format from Electron installer (cameraConfigurationService.ts lines 2424-2435)
@@ -951,70 +936,44 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 
 	// CRITICAL FIX: Store body bytes for reuse during authentication
 	bodyBytes := buf.Bytes()
-	logger.Printf("Created license multipart form-data, size: %d bytes", len(bodyBytes))
-
-	// Log first 500 bytes as both string and hex
-	firstBytes := 500
-	if len(bodyBytes) < firstBytes {
-		firstBytes = len(bodyBytes)
-	}
-	logger.Printf("Multipart body (first %d bytes as string): %q", firstBytes, bodyBytes[:firstBytes])
-	logger.Printf("Multipart body (first %d bytes as hex): %x", firstBytes, bodyBytes[:firstBytes])
-
-	// Log last 200 bytes
-	lastStart := len(bodyBytes) - 200
-	if lastStart < 0 {
-		lastStart = 0
-	}
-	logger.Printf("Multipart body (last %d bytes as string): %q", len(bodyBytes)-lastStart, bodyBytes[lastStart:])
-	logger.Printf("Multipart body (last %d bytes as hex): %x", len(bodyBytes)-lastStart, bodyBytes[lastStart:])
 
 	// Upload to camera with Digest Auth
-	logger.Printf("Uploading license to camera...")
 	httpReq, err := http.NewRequest("POST", payload.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		logger.Printf("❌ Failed to create upload request: %v", err)
+		logger.Printf("Failed to create upload request: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-	logger.Printf("Request headers: Content-Type=%s", httpReq.Header.Get("Content-Type"))
-	logger.Printf("Request URL: %s", httpReq.URL.String())
-	logger.Printf("Request method: %s", httpReq.Method)
-
 	// Try Digest auth first (pass bodyBytes for reuse)
 	// Use uploadClient for longer timeout (license upload can take time)
 	uploadResp, err := makeAuthenticatedRequestWithBodyAndClient(httpReq, payload.Username, payload.Password, bodyBytes, uploadClient)
 	if err != nil {
-		logger.Printf("❌ License upload failed: %v", err)
+		logger.Printf("License upload failed: %v", err)
 		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer uploadResp.Body.Close()
 
 	uploadBody, _ := io.ReadAll(uploadResp.Body)
-	logger.Printf("License upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
 
 	// CRITICAL: Check for error codes in body even if HTTP 200
 	bodyText := string(uploadBody)
 	if strings.Contains(bodyText, "Error:") && !strings.Contains(bodyText, "Error: 0") && !strings.Contains(bodyText, "Error: 30") {
-		logger.Printf("❌ Camera returned error in body despite HTTP 200")
-		logger.Printf("Response body: %s", bodyText)
+		logger.Printf("Camera returned error: %s", bodyText)
 		http.Error(w, bodyText, http.StatusBadRequest)
 		return
 	}
 
 	if uploadResp.StatusCode >= 400 {
-		logger.Printf("❌ Camera rejected license upload (HTTP %d)", uploadResp.StatusCode)
+		logger.Printf("Camera rejected license upload (HTTP %d): %s", uploadResp.StatusCode, string(uploadBody))
 		http.Error(w, string(uploadBody), uploadResp.StatusCode)
 		return
 	}
 
-	logger.Printf("========================================")
-	logger.Printf("✅ LICENSE UPLOAD SUCCESSFUL!")
-	logger.Printf("========================================")
+	logger.Printf("✅ License upload successful")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
