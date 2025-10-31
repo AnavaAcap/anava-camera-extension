@@ -4,6 +4,6 @@
   "path": "/Users/USERNAME/Applications/AnavaLocalConnector/local-connector",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://PLACEHOLDER_EXTENSION_ID/"
+    "chrome-extension://gjmomjeppelbbhcmjhnajlbmohogmigi/"
   ]
 }

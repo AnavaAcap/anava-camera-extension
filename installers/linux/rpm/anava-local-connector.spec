@@ -67,7 +67,7 @@ cat > "${NATIVE_MESSAGING_DIR}/com.anava.local_connector.json" <<EOF
   "path": "/opt/anava/local-connector/local-connector",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://PLACEHOLDER_EXTENSION_ID/"
+    "chrome-extension://gjmomjeppelbbhcmjhnajlbmohogmigi/"
   ]
 }
 EOF

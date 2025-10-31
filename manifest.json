@@ -10,8 +10,8 @@
     "offscreen"
   ],
   "host_permissions": [
-    "http://localhost:*/*",
-    "http://127.0.0.1:*/*",
+    "http://localhost:9876/*",
+    "http://127.0.0.1:9876/*",
     "https://anava-ai.web.app/*",
     "https://anava-ai.firebaseapp.com/*",
     "https://*.anava.cloud/*",
@@ -27,7 +27,7 @@
         "https://anava-ai.firebaseapp.com/*",
         "https://*.anava.cloud/*"
       ],
-      "js": ["dist/content-script.js"],
+      "js": ["content-script.js"],
       "run_at": "document_start"
     }
   ],
@@ -35,7 +35,6 @@
     "matches": [
       "http://localhost:5173/*",
       "http://localhost:3000/*",
-      "http://localhost:*/*",
       "https://anava-ai.web.app/*",
       "https://anava-ai.firebaseapp.com/*",
       "https://*.anava.cloud/*"
@@ -43,16 +42,16 @@
     "accepts_tls_channel_id": false
   },
   "action": {
-    "default_popup": "dist/popup.html",
+    "default_popup": "popup.html",
     "default_title": "Anava Local Connector"
   },
   "background": {
-    "service_worker": "dist/background.js"
+    "service_worker": "background.js"
   },
   "icons": {
-    "16": "dist/icon16.png",
-    "48": "dist/icon48.png",
-    "128": "dist/icon128.png"
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
