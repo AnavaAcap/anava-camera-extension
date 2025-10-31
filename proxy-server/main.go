@@ -167,11 +167,11 @@ func sanitizeCredential(credential string) string {
 // SECURITY: Allowed origins for CORS (whitelist approach)
 // Only these origins can make requests to the proxy server
 var allowedOrigins = map[string]bool{
-	"http://localhost:5173":       true, // Local dev server
-	"http://localhost:3000":       true, // Alternative local dev
-	"https://anava-ai.web.app":    true, // Production web app
-	"http://127.0.0.1:5173":       true, // Localhost IP variant
-	"http://127.0.0.1:3000":       true, // Localhost IP variant
+	"http://localhost:5173":                               true, // Local dev server
+	"http://localhost:3000":                               true, // Alternative local dev
+	"https://anava-ai.web.app":                            true, // Production web app
+	"http://127.0.0.1:5173":                               true, // Localhost IP variant
+	"http://127.0.0.1:3000":                               true, // Localhost IP variant
 	"chrome-extension://ojhdgnojgelfiejpgipjddfddgefdpfa": true, // Extension ID (from install script)
 }
 
@@ -931,7 +931,7 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("Content-Type: text/xml\r\n")
 	buf.WriteString("\r\n") // Empty line after headers (this is the "" element)
 	buf.WriteString(payload.LicenseXML)
-	buf.WriteString("\r\n") // CRLF after content
+	buf.WriteString("\r\n")                     // CRLF after content
 	buf.WriteString("--" + boundary + "--\r\n") // Closing boundary + CRLF (last element "" adds no extra CRLF)
 
 	// CRITICAL FIX: Store body bytes for reuse during authentication
