@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.anava.local-connector-extension</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/ryanwager/anava-camera-extension/build/local-connector</string>
+	</array>
+
+	<!-- Auto-start on system boot -->
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Auto-restart on crash (but throttle to prevent rapid restart loops) -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<!-- Wait 10 seconds before restarting after crash -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<!-- Logging -->
+	<key>StandardOutPath</key>
+	<string>/Users/ryanwager/Library/Logs/anava-local-connector.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/ryanwager/Library/Logs/anava-local-connector-error.log</string>
+
+	<!-- Environment variables -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<!-- Working directory -->
+	<key>WorkingDirectory</key>
+	<string>/Users/ryanwager/anava-camera-extension</string>
+
+	<!-- Process type (important for network access) -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
+
+	<!-- Nice priority (default is 0) -->
+	<key>Nice</key>
+	<integer>0</integer>
+</dict>
+</plist>

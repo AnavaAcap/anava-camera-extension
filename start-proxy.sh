@@ -1,58 +1,52 @@
 #!/bin/bash
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Anava Camera Proxy Starter
+# Starts the local network proxy server that allows Chrome extension to access cameras
 
-PROXY_BIN="$HOME/Library/Application Support/Anava/camera-proxy-server"
-PID_FILE="$HOME/Library/Application Support/Anava/camera-proxy-server.pid"
-
-echo -e "${YELLOW}Starting Anava Camera Proxy Server...${NC}"
+PROXY_BIN="/Applications/AnavaLocalConnector/local-connector"
+LOG_FILE="$HOME/Library/Logs/anava-camera-proxy-server.log"
+PID_FILE="$HOME/Library/Application Support/Anava/proxy.pid"
 
 # Check if already running
 if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if ps -p $OLD_PID > /dev/null 2>&1; then
-        echo -e "${YELLOW}Proxy server is already running (PID: $OLD_PID)${NC}"
+    PID=$(cat "$PID_FILE")
+    if ps -p $PID > /dev/null 2>&1; then
+        echo "✅ Proxy is already running (PID: $PID)"
+        echo "   Health check: http://127.0.0.1:9876/health"
         exit 0
-    else
-        rm "$PID_FILE"
     fi
 fi
 
-# Check if binary exists
+# Ensure binary exists
 if [ ! -f "$PROXY_BIN" ]; then
-    echo -e "${RED}Error: Proxy server binary not found at: $PROXY_BIN${NC}"
-    echo "Please run ./install-proxy.sh first"
+    echo "❌ Proxy binary not found at $PROXY_BIN"
+    echo "   Run ./install-proxy.sh first"
     exit 1
 fi
 
-# Start the server in background
-"$PROXY_BIN" > /dev/null 2>&1 &
-SERVER_PID=$!
+# Start proxy in background
+echo "🚀 Starting Anava camera proxy..."
+nohup "$PROXY_BIN" > /dev/null 2>&1 &
+PROXY_PID=$!
 
 # Save PID
-echo $SERVER_PID > "$PID_FILE"
+mkdir -p "$(dirname "$PID_FILE")"
+echo $PROXY_PID > "$PID_FILE"
 
-# Wait a moment and check if it's running
+# Wait and verify
 sleep 2
-if ps -p $SERVER_PID > /dev/null 2>&1; then
-    if curl -s http://127.0.0.1:9876/health > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ Proxy server started successfully (PID: $SERVER_PID)${NC}"
-        echo ""
-        echo "The proxy server is now running in the background."
-        echo "You can now use the Chrome extension to authenticate with cameras."
-        echo ""
-        echo "To stop the server: ./stop-proxy.sh"
-        echo "Logs: ~/Library/Logs/anava-camera-proxy-server.log"
+if ps -p $PROXY_PID > /dev/null 2>&1; then
+    # Test health endpoint
+    if curl -s -m 2 http://127.0.0.1:9876/health | grep -q "ok"; then
+        echo "✅ Proxy started successfully (PID: $PROXY_PID)"
+        echo "   Listening on: http://127.0.0.1:9876"
+        echo "   Logs: $LOG_FILE"
     else
-        echo -e "${RED}✗ Proxy server started but health check failed${NC}"
-        exit 1
+        echo "⚠️  Proxy started but health check failed"
+        echo "   Check logs: tail -f $LOG_FILE"
     fi
 else
-    echo -e "${RED}✗ Proxy server failed to start${NC}"
-    rm "$PID_FILE"
+    echo "❌ Failed to start proxy"
+    rm -f "$PID_FILE"
     exit 1
 fi

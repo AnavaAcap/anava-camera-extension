@@ -42,7 +42,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
       return true;
 
     case 'scan_network':
-      handleScanNetwork(message.payload)
+      handleScanNetwork(message.payload, sender)
         .then(result => sendResponse({ success: true, data: result }))
         .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
@@ -81,7 +81,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
 
       case 'SCAN_CAMERAS':
-        handleScanNetwork(message)
+        handleScanNetwork(message, sender)
           .then(result => sendResponse({ success: true, data: result }))
           .catch(error => sendResponse({ success: false, error: error.message }));
         return true;
@@ -106,6 +106,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.command) {
     case 'install_proxy':
       handleInstallProxy()
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'restart_proxy':
+      handleRestartProxy()
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'check_proxy_instances':
+      handleCheckProxyInstances()
+        .then(result => sendResponse(result))
+        .catch(error => sendResponse({ error: error.message }));
+      return true;
+
+    case 'kill_duplicate_proxies':
+      handleKillDuplicateProxies()
         .then(result => sendResponse({ success: true, data: result }))
         .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
@@ -200,13 +218,52 @@ async function handleHealthCheck() {
 }
 
 /**
+ * Ensure proxy server is ready before operations
+ * Retries up to 3 times with 2 second delays
+ */
+async function ensureProxyReady() {
+  const maxRetries = 3;
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch('http://127.0.0.1:9876/health', {
+        method: 'GET',
+        signal: AbortSignal.timeout(3000)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[Background] ✅ Proxy server is ready:', data);
+        return true;
+      } else {
+        console.warn(`[Background] Proxy health check returned HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn(`[Background] Proxy check attempt ${i+1}/${maxRetries} failed:`, error.message);
+
+      if (i < maxRetries - 1) {
+        // Wait 2 seconds before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+  }
+
+  throw new Error('Local connector not responding. Please ensure the proxy server is running by running: ./install-local-connector.sh');
+}
+
+/**
  * Scan network for cameras
  */
-async function handleScanNetwork(payload) {
+async function handleScanNetwork(payload, sender) {
   const { subnet, credentials } = payload;
   console.log('[Background] Scanning network:', subnet);
 
   try {
+    // CRITICAL: Verify proxy is ready before scanning
+    console.log('[Background] Verifying proxy server is ready...');
+    await ensureProxyReady();
+    console.log('[Background] Proxy verified - starting network scan');
+
     // Parse CIDR
     const { baseIp, count } = parseCIDR(subnet);
     console.log(`[Background] Scanning ${count} IPs starting from ${baseIp}`);
@@ -218,9 +275,52 @@ async function handleScanNetwork(payload) {
     // Scan in batches of 50 (fast but doesn't overwhelm proxy)
     const batchSize = 50;
     const discoveredCameras = [];
-    const totalBatches = Math.ceil(ipsToScan.length / batchSize);
+    const discoveredAxisDevices = [];
+    const totalIPs = ipsToScan.length;
+    const totalBatches = Math.ceil(totalIPs / batchSize);
 
-    console.log(`[Background] Scanning ${ipsToScan.length} IPs in ${totalBatches} batches of ${batchSize}...`);
+    console.log(`[Background] Scanning ${totalIPs} IPs in ${totalBatches} batches of ${batchSize}...`);
+
+    // Helper to broadcast progress to web app (if it's an external message)
+    const broadcastProgress = async (scannedIPs) => {
+      if (sender && sender.origin) {
+        // External message from web app - send progress back via tabs
+        try {
+          const tabs = await chrome.tabs.query({ url: sender.origin + '/*' });
+          console.log(`[Background] Broadcasting progress to ${tabs.length} tabs:`, {
+            scannedIPs,
+            totalIPs,
+            cameras: discoveredCameras.length
+          });
+
+          if (tabs && tabs.length > 0) {
+            for (const tab of tabs) {
+              if (tab && tab.id) {
+                try {
+                  await chrome.tabs.sendMessage(tab.id, {
+                    type: 'scan_progress',
+                    data: {
+                      scannedIPs,
+                      totalIPs,
+                      axisDevices: discoveredAxisDevices.length,
+                      cameras: discoveredCameras.length,
+                      percentComplete: (scannedIPs / totalIPs) * 100
+                    }
+                  });
+                } catch (err) {
+                  // Silently ignore - tab may have closed or content script not injected yet
+                  console.log(`[Background] Failed to send to tab ${tab.id}:`, err.message);
+                }
+              }
+            }
+          } else {
+            console.warn('[Background] No tabs found for origin:', sender.origin);
+          }
+        } catch (error) {
+          console.error('[Background] Failed to query tabs:', error);
+        }
+      }
+    };
 
     for (let i = 0; i < ipsToScan.length; i += batchSize) {
       const batch = ipsToScan.slice(i, i + batchSize);
@@ -231,11 +331,22 @@ async function handleScanNetwork(payload) {
       const batchResults = await Promise.all(batchPromises);
 
       batchResults.forEach(camera => {
-        if (camera) discoveredCameras.push(camera);
+        if (camera) {
+          discoveredAxisDevices.push(camera);
+          if (camera.deviceType === 'camera') {
+            discoveredCameras.push(camera);
+          }
+        }
       });
+
+      // Broadcast progress after each batch
+      await broadcastProgress(i + batch.length);
 
       console.log(`[Background] Batch ${batchNum} complete. Found ${discoveredCameras.length} cameras so far.`);
     }
+
+    // Final progress update
+    await broadcastProgress(totalIPs);
 
     console.log(`[Background] Scan complete. Found ${discoveredCameras.length} cameras total.`);
     return { cameras: discoveredCameras };
@@ -270,7 +381,14 @@ async function checkCamera(ip, credentials) {
       signal: AbortSignal.timeout(3000)  // 3 second timeout
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      // Log first few failures to understand network issues
+      if (Math.random() < 0.02) { // Log 2% of failures
+        const errorText = await response.text().catch(() => 'Unable to read error');
+        console.log(`[Background] ${ip} returned HTTP ${response.status}:`, errorText.substring(0, 100));
+      }
+      return null;
+    }
 
     const result = await response.json();
 
@@ -281,6 +399,8 @@ async function checkCamera(ip, credentials) {
     if (!data.Brand || !data.Brand.toLowerCase().includes('axis')) {
       return null;
     }
+
+    console.log(`[Background] ✅ Found camera at ${ip}: ${data.ProdFullName}`);
 
     return {
       ip,
@@ -293,6 +413,10 @@ async function checkCamera(ip, credentials) {
       deviceType: 'camera'
     };
   } catch (error) {
+    // Log first few errors to see what's failing
+    if (Math.random() < 0.01) { // Log 1% of errors
+      console.error(`[Background] ${ip} error:`, error.message);
+    }
     return null;
   }
 }
@@ -351,61 +475,98 @@ function extractSocType(socString) {
  */
 async function handleDeployAcap(payload) {
   const { cameraIp, credentials, config } = payload;
-  console.log('[Background] Starting complete ACAP deployment to:', cameraIp);
+  console.log('[Background] ========================================');
+  console.log('[Background] Starting ACAP deployment to:', cameraIp);
+  console.log('[Background] Credentials:', { username: credentials.username, password: '***' });
+  console.log('[Background] Config keys:', Object.keys(config));
+  console.log('[Background] ========================================');
 
   try {
+    // Verify proxy is ready
+    console.log('[Background] Verifying proxy server is ready...');
+    await ensureProxyReady();
+
     // Step 0: Get camera firmware info and MAC address
     console.log('[Background] Step 0: Getting camera info...');
     const cameraInfo = await getCameraInfo(cameraIp, credentials);
-    console.log('[Background] Camera info:', cameraInfo);
+    console.log('[Background] ✅ Camera info:', cameraInfo);
 
     // Step 1: Deploy ACAP file
     console.log('[Background] Step 1: Deploying ACAP file...');
-    await deployAcapFile(cameraIp, credentials, cameraInfo);
-    console.log('[Background] ACAP deployed successfully');
+    try {
+      await deployAcapFile(cameraIp, credentials, cameraInfo);
+      console.log('[Background] ✅ ACAP deployed successfully');
+    } catch (error) {
+      console.error('[Background] ❌ Step 1 failed:', error.message);
+      throw new Error(`Step 1 (Deploy ACAP): ${error.message}`);
+    }
     await sleep(3000); // Wait 3s for installation
 
     // Step 2: Activate license
     console.log('[Background] Step 2: Activating license...');
-    await activateLicense(cameraIp, credentials, config.licenseKey, cameraInfo.mac);
-    console.log('[Background] License activated successfully');
+    try {
+      await activateLicense(cameraIp, credentials, config.licenseKey, cameraInfo.mac);
+      console.log('[Background] ✅ License activated successfully');
+    } catch (error) {
+      console.error('[Background] ❌ Step 2 failed:', error.message);
+      throw new Error(`Step 2 (Activate License): ${error.message}`);
+    }
     await sleep(3000); // Wait 3s for processing
 
     // Step 3: Ensure ACAP is running
     console.log('[Background] Step 3: Ensuring ACAP is running...');
-    await ensureAcapRunning(cameraIp, credentials);
-    console.log('[Background] ACAP is running');
+    try {
+      await ensureAcapRunning(cameraIp, credentials);
+      console.log('[Background] ✅ ACAP is running');
+    } catch (error) {
+      console.error('[Background] ❌ Step 3 failed:', error.message);
+      throw new Error(`Step 3 (Start ACAP): ${error.message}`);
+    }
 
     // Step 4: Push configuration
     console.log('[Background] Step 4: Pushing configuration...');
-    await pushConfiguration(cameraIp, credentials, config);
-    console.log('[Background] Configuration pushed successfully');
+    try {
+      await pushConfiguration(cameraIp, credentials, config);
+      console.log('[Background] ✅ Configuration pushed successfully');
+    } catch (error) {
+      console.error('[Background] ❌ Step 4 failed:', error.message);
+      throw new Error(`Step 4 (Push Config): ${error.message}`);
+    }
     await sleep(2000); // Wait 2s for verification
 
     // Step 5: Validate deployment
     console.log('[Background] Step 5: Validating deployment...');
-    const validation = await validateDeployment(cameraIp, credentials);
-    console.log('[Background] Validation result:', validation);
+    try {
+      const validation = await validateDeployment(cameraIp, credentials);
+      console.log('[Background] ✅ Validation result:', validation);
 
-    // Step 6: Capture scene description (verification test)
-    console.log('[Background] Step 6: Testing ACAP functionality...');
-    // Optional: Could add scene capture test here
+      console.log('[Background] ========================================');
+      console.log('[Background] 🎉 DEPLOYMENT SUCCESSFUL!');
+      console.log('[Background] ========================================');
 
-    return {
-      success: true,
-      message: 'Complete deployment successful',
-      details: {
-        cameraIp,
-        mac: cameraInfo.mac,
-        firmware: cameraInfo.firmware,
-        model: cameraInfo.model,
-        validation
-      }
-    };
+      return {
+        success: true,
+        message: 'Complete deployment successful',
+        details: {
+          cameraIp,
+          mac: cameraInfo.mac,
+          firmware: cameraInfo.firmware,
+          model: cameraInfo.model,
+          validation
+        }
+      };
+    } catch (error) {
+      console.error('[Background] ❌ Step 5 failed:', error.message);
+      throw new Error(`Step 5 (Validate): ${error.message}`);
+    }
 
   } catch (error) {
-    console.error('[Background] Deployment error:', error);
-    throw new Error(`Deployment failed: ${error.message}`);
+    console.error('[Background] ========================================');
+    console.error('[Background] ❌ DEPLOYMENT FAILED');
+    console.error('[Background] Error:', error.message);
+    console.error('[Background] Stack:', error.stack);
+    console.error('[Background] ========================================');
+    throw error; // Re-throw original error to preserve stack
   }
 }
 
@@ -445,9 +606,16 @@ async function getCameraInfo(cameraIp, credentials) {
 }
 
 function detectOSVersion(firmwareVersion) {
-  if (!firmwareVersion) return 'OS12';
+  if (!firmwareVersion) return 'os12';
   const major = parseInt(firmwareVersion.split('.')[0]);
-  return major >= 11 ? 'OS12' : 'OS11';
+
+  // Firmware version mapping (lowercase to match actual file names):
+  // 10.x and below → os10 (unsupported)
+  // 11.x → os11
+  // 12.x and above → os12
+  if (major >= 12) return 'os12';
+  if (major >= 11) return 'os11';
+  return 'os10'; // Unsupported
 }
 
 /**
@@ -458,20 +626,11 @@ async function deployAcapFile(cameraIp, credentials, cameraInfo) {
   const acapUrl = await getAcapDownloadUrl(cameraInfo.architecture, cameraInfo.osVersion);
   console.log('[Background] ACAP URL:', acapUrl);
 
-  // Download ACAP file
-  console.log('[Background] Downloading ACAP...');
-  const acapBlob = await fetch(acapUrl).then(r => r.blob());
-  console.log('[Background] ACAP downloaded, size:', acapBlob.size);
-
-  // Upload to camera via multipart form-data
-  const formData = new FormData();
-  formData.append('packfil', acapBlob, 'BatonAnalytic.eap');
-
+  // Upload to camera via proxy (proxy will download from GitHub and upload to camera)
   const uploadUrl = `https://${cameraIp}/axis-cgi/applications/upload.cgi`;
 
-  // Proxy doesn't support FormData, so we need to use direct fetch with auth header
-  const authHeader = 'Basic ' + btoa(`${credentials.username}:${credentials.password}`);
-
+  console.log('[Background] Uploading ACAP via proxy...');
+  console.log('[Background] This may take 60-120 seconds for large files...');
   const uploadResponse = await fetch('http://127.0.0.1:9876/upload-acap', {
     method: 'POST',
     headers: {
@@ -482,7 +641,8 @@ async function deployAcapFile(cameraIp, credentials, cameraInfo) {
       username: credentials.username,
       password: credentials.password,
       acapUrl // Proxy will download and upload
-    })
+    }),
+    signal: AbortSignal.timeout(320000) // 320 second timeout (allow buffer beyond proxy's 300s)
   });
 
   if (!uploadResponse.ok) {
@@ -555,40 +715,61 @@ async function generateLicenseWithAxisSDK(deviceId, licenseKey) {
 
 /**
  * Get ACAP download URL from GitHub releases
+ * Actual file format: signed_Anava_-_Analyze_7.4.6_aarch64_os11.eap
  */
 async function getAcapDownloadUrl(architecture, osVersion) {
-  // GitHub API: Get latest release
-  const releaseUrl = 'https://api.github.com/repos/AnavaAcap/vision-releases/releases/latest';
-  const release = await fetch(releaseUrl).then(r => r.json());
+  try {
+    // Use the correct GitHub repo (not vision-releases!)
+    const releaseUrl = 'https://api.github.com/repos/AnavaAcap/acap-releases/releases/latest';
+    console.log('[Background] Fetching ACAP releases from GitHub:', releaseUrl);
 
-  // Find matching ACAP file
-  const arch = architecture.toLowerCase();
-  const os = osVersion.toLowerCase();
+    const response = await fetch(releaseUrl);
+    console.log('[Background] GitHub API response status:', response.status);
 
-  const asset = release.assets.find(a =>
-    a.name.toLowerCase().includes(arch) &&
-    a.name.toLowerCase().includes(os) &&
-    a.name.endsWith('.eap')
-  );
-
-  if (!asset) {
-    // Fallback to aarch64 OS12 (most common)
-    const fallback = release.assets.find(a =>
-      a.name.toLowerCase().includes('aarch64') &&
-      a.name.toLowerCase().includes('os12') &&
-      a.name.endsWith('.eap')
-    );
-
-    if (!fallback) {
-      throw new Error(`No ACAP found for ${arch} ${os}`);
+    if (!response.ok) {
+      throw new Error(`GitHub API returned ${response.status}: ${response.statusText}`);
     }
 
-    console.log('[Background] Using fallback ACAP:', fallback.name);
-    return fallback.browser_download_url;
-  }
+    const release = await response.json();
+    console.log('[Background] Release data:', release.tag_name, 'with', release.assets?.length, 'assets');
 
-  console.log('[Background] Found ACAP:', asset.name);
-  return asset.browser_download_url;
+    // Normalize inputs to match actual file naming convention
+    const arch = architecture.toLowerCase(); // aarch64 or armv7hf
+    const os = osVersion.toLowerCase(); // os11 or os12 (lowercase!)
+
+    console.log(`[Background] Looking for ACAP: architecture=${arch}, osVersion=${os}`);
+
+    // List all available ACAP files for debugging
+    const acapFiles = release.assets.filter(a => a.name.endsWith('.eap') || a.name.endsWith('.acap'));
+    console.log('[Background] Available ACAP files:', acapFiles.map(a => a.name));
+
+    // Match files that contain both architecture AND OS version
+    // Example: signed_Anava_-_Analyze_7.4.6_aarch64_os11.eap
+    const matches = acapFiles.filter(a => {
+      const name = a.name.toLowerCase();
+      return name.includes(arch) && name.includes(os);
+    });
+
+    console.log('[Background] Found', matches.length, 'matching ACAP files');
+
+    if (matches.length === 0) {
+      // No matches - throw detailed error
+      throw new Error(
+        `No ACAP found for architecture=${arch} osVersion=${os}. ` +
+        `Available files: ${acapFiles.map(a => a.name).join(', ')}`
+      );
+    }
+
+    // If multiple matches, prefer the latest (they should be sorted by version)
+    const selectedAcap = matches[0];
+    console.log(`[Background] ✅ Selected ACAP: ${selectedAcap.name}`);
+    console.log(`[Background] Download URL: ${selectedAcap.browser_download_url}`);
+
+    return selectedAcap.browser_download_url;
+  } catch (error) {
+    console.error('[Background] Error in getAcapDownloadUrl:', error);
+    throw new Error(`Failed to get ACAP download URL: ${error.message}`);
+  }
 }
 
 /**
@@ -612,7 +793,8 @@ async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
       username: credentials.username,
       password: credentials.password,
       licenseXML
-    })
+    }),
+    signal: AbortSignal.timeout(320000) // 320 second timeout (allow buffer beyond proxy's 300s)
   });
 
   if (!uploadResponse.ok) {
@@ -876,31 +1058,106 @@ function generateIpRange(baseIp, count) {
  */
 async function handleInstallProxy() {
   try {
-    // For Chrome extensions, we cannot directly execute shell scripts
-    // Instead, we'll create a downloadable install script and open instructions
-
-    // Option 1: Try to open Terminal with the install command (macOS only)
-    // This requires the extension folder path to be known
-    const installInstructions = `
-To install the proxy server:
-
-1. Open Terminal
-2. Navigate to the extension folder
-3. Run: ./install-proxy.sh
-
-Alternative: Download and run the installer script from:
-https://github.com/AnavaAcap/anava-camera-extension
-    `;
-
     console.log('[Background] Proxy installation requested');
     console.log('[Background] User needs to run: ./install-proxy.sh');
 
-    // Since we can't execute shell scripts directly from a Chrome extension,
-    // we'll return instructions for the user
+    // Chrome extensions cannot execute shell scripts directly
+    // Return instructions for manual installation
     throw new Error('Automatic installation is not available. Please run ./install-proxy.sh manually from the extension folder.');
 
   } catch (error) {
     console.error('[Background] Install proxy error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Handle proxy server restart
+ * Kills existing instances and starts a new one
+ */
+async function handleRestartProxy() {
+  try {
+    console.log('[Background] Restarting proxy server...');
+
+    // Step 1: Kill existing proxy instances
+    await handleKillDuplicateProxies();
+
+    // Step 2: Wait a moment for processes to terminate
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Step 3: Start proxy (in practice, user needs to run install script)
+    // We can't start processes from Chrome extension, so just verify it's running
+    const response = await fetch('http://127.0.0.1:9876/health', {
+      method: 'GET',
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (response.ok) {
+      console.log('[Background] Proxy server restarted successfully');
+      return { restarted: true };
+    } else {
+      throw new Error('Proxy server not responding after restart attempt');
+    }
+
+  } catch (error) {
+    console.error('[Background] Restart proxy error:', error);
+    throw new Error('Unable to restart proxy automatically. Please run: ./start-proxy.sh');
+  }
+}
+
+/**
+ * Check for multiple proxy server instances (port conflicts)
+ */
+async function handleCheckProxyInstances() {
+  try {
+    console.log('[Background] Checking for multiple proxy instances...');
+
+    // Check if port 9876 is in use
+    const response = await fetch('http://127.0.0.1:9876/health', {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    });
+
+    if (response.ok) {
+      // Port is in use by a responsive process
+      return {
+        inUse: true,
+        multipleInstances: false, // Can't detect multiple instances from Chrome
+        processCount: 1
+      };
+    } else {
+      return {
+        inUse: true,
+        multipleInstances: false,
+        processCount: 0
+      };
+    }
+
+  } catch (error) {
+    // Port not in use or not responding
+    return {
+      inUse: false,
+      multipleInstances: false,
+      processCount: 0
+    };
+  }
+}
+
+/**
+ * Kill duplicate proxy server instances
+ */
+async function handleKillDuplicateProxies() {
+  try {
+    console.log('[Background] Killing duplicate proxy instances...');
+
+    // Chrome extensions cannot execute shell commands
+    // User needs to manually run: pkill -f camera-proxy-server
+    console.log('[Background] User needs to manually kill processes: pkill -f camera-proxy-server');
+
+    throw new Error('Cannot kill processes from Chrome extension. Please run: pkill -f camera-proxy-server');
+
+  } catch (error) {
+    console.error('[Background] Kill duplicates error:', error);
     throw error;
   }
 }
@@ -1085,8 +1342,8 @@ async function checkNativeVersion() {
 chrome.runtime.onInstalled.addListener((details) => {
   console.log('[Background] Extension installed/updated:', details.reason);
 
-  // Check native version on install/update
-  checkNativeVersion();
+  // DISABLED: Native host version check not needed for proxy-based deployment
+  // checkNativeVersion();
 });
 
 /**
@@ -1095,18 +1352,20 @@ chrome.runtime.onInstalled.addListener((details) => {
 chrome.runtime.onStartup.addListener(() => {
   console.log('[Background] Browser started');
 
-  // Check native version on startup
-  checkNativeVersion();
+  // DISABLED: Native host version check not needed for proxy-based deployment
+  // checkNativeVersion();
 });
 
 /**
  * Periodic version check (every 5 minutes)
+ * DISABLED: Native host not required for camera deployment via proxy server
  */
-setInterval(() => {
-  checkNativeVersion();
-}, 5 * 60 * 1000); // 5 minutes
+// setInterval(() => {
+//   checkNativeVersion();
+// }, 5 * 60 * 1000); // 5 minutes
 
-// Initial version check on script load
-checkNativeVersion();
+// DISABLED: Initial version check on script load
+// Native host not required - camera deployment uses HTTP proxy on port 9876
+// checkNativeVersion();
 
 console.log('[Background] Anava Local Network Bridge initialized');

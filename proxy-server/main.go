@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -38,9 +39,10 @@ type ProxyResponse struct {
 }
 
 var (
-	client *http.Client
-	logger *log.Logger
-	certStore *CertificateStore
+	client       *http.Client // Regular requests (30s timeout)
+	uploadClient *http.Client // Upload requests (3 minute timeout)
+	logger       *log.Logger
+	certStore    *CertificateStore
 )
 
 // CertificateStore manages certificate fingerprints for known cameras
@@ -180,52 +182,75 @@ func init() {
 	certStoreFile := filepath.Join(certStoreDir, "certificate-fingerprints.json")
 	certStore = NewCertificateStore(certStoreFile)
 
-	// Create HTTP client for camera connections with certificate validation
+	// Create TLS config with certificate validation (shared by both clients)
+	tlsConfig := &tls.Config{
+		// SECURITY: Still accept self-signed, but we'll validate fingerprints
+		InsecureSkipVerify: true,
+		// Callback to validate certificate fingerprints
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("no peer certificates")
+			}
+
+			// Get the leaf certificate (server's cert)
+			cert := cs.PeerCertificates[0]
+			host := cs.ServerName
+			currentFingerprint := calculateCertFingerprint(cert)
+
+			// Check if we've seen this host before
+			if storedFingerprint, exists := certStore.GetFingerprint(host); exists {
+				// We've seen this host - verify fingerprint matches
+				if storedFingerprint != currentFingerprint {
+					// SECURITY ALERT: Certificate changed!
+					logger.Printf("🚨 SECURITY ALERT: Certificate changed for %s", host)
+					logger.Printf("   Stored fingerprint: %s", storedFingerprint)
+					logger.Printf("   Current fingerprint: %s", currentFingerprint)
+					logger.Printf("   This could indicate a Man-in-the-Middle attack!")
+
+					// For now, we'll log but allow (to prevent breaking deployments)
+					// In production, consider returning an error here
+					// return fmt.Errorf("certificate fingerprint mismatch for %s", host)
+				} else {
+					logger.Printf("✓ Certificate validated for %s (fingerprint matches)", host)
+				}
+			} else {
+				// First time seeing this host - store fingerprint
+				logger.Printf("📌 Pinning certificate for new host: %s", host)
+				logger.Printf("   Fingerprint: %s", currentFingerprint)
+				certStore.SetFingerprint(host, currentFingerprint)
+			}
+
+			return nil
+		},
+	}
+
+	// CRITICAL FIX: Create dialer that lets OS choose the best interface
+	// This ensures we use the interface that can actually reach 192.168.x.x networks
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		// Don't bind to specific interface - let OS routing table decide
+	}
+
+	// Create HTTP client for regular camera requests (30 second timeout)
 	client = &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				// SECURITY: Still accept self-signed, but we'll validate fingerprints
-				InsecureSkipVerify: true,
-				// Callback to validate certificate fingerprints
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("no peer certificates")
-					}
-
-					// Get the leaf certificate (server's cert)
-					cert := cs.PeerCertificates[0]
-					host := cs.ServerName
-					currentFingerprint := calculateCertFingerprint(cert)
-
-					// Check if we've seen this host before
-					if storedFingerprint, exists := certStore.GetFingerprint(host); exists {
-						// We've seen this host - verify fingerprint matches
-						if storedFingerprint != currentFingerprint {
-							// SECURITY ALERT: Certificate changed!
-							logger.Printf("🚨 SECURITY ALERT: Certificate changed for %s", host)
-							logger.Printf("   Stored fingerprint: %s", storedFingerprint)
-							logger.Printf("   Current fingerprint: %s", currentFingerprint)
-							logger.Printf("   This could indicate a Man-in-the-Middle attack!")
-
-							// For now, we'll log but allow (to prevent breaking deployments)
-							// In production, consider returning an error here
-							// return fmt.Errorf("certificate fingerprint mismatch for %s", host)
-						} else {
-							logger.Printf("✓ Certificate validated for %s (fingerprint matches)", host)
-						}
-					} else {
-						// First time seeing this host - store fingerprint
-						logger.Printf("📌 Pinning certificate for new host: %s", host)
-						logger.Printf("   Fingerprint: %s", currentFingerprint)
-						certStore.SetFingerprint(host, currentFingerprint)
-					}
-
-					return nil
-				},
-			},
+			DialContext:     dialer.DialContext,
+			TLSClientConfig: tlsConfig,
 		},
 		Timeout: 30 * time.Second,
 	}
+
+	// Create separate HTTP client for uploads (3 minute timeout)
+	// ACAP files can be several MB and cameras take time to process uploads
+	uploadClient = &http.Client{
+		Transport: &http.Transport{
+			DialContext:     dialer.DialContext,
+			TLSClientConfig: tlsConfig,
+		},
+		Timeout: 300 * time.Second, // 5 minutes for large file uploads (matches Electron installer)
+	}
+	logger.Printf("Initialized HTTP clients: regular (30s timeout), upload (300s timeout)")
 }
 
 // isOriginAllowed checks if the request origin is in the whitelist
@@ -767,33 +792,39 @@ func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Printf("Uploading ACAP from %s to %s", payload.AcapURL, payload.URL)
+	logger.Printf("========================================")
+	logger.Printf("ACAP UPLOAD STARTED")
+	logger.Printf("Source: %s", payload.AcapURL)
+	logger.Printf("Target: %s", payload.URL)
+	logger.Printf("========================================")
 
 	// Download ACAP file from GitHub
+	logger.Printf("Step 1/3: Downloading ACAP from GitHub...")
 	acapResp, err := http.Get(payload.AcapURL)
 	if err != nil {
-		logger.Printf("Failed to download ACAP: %v", err)
+		logger.Printf("❌ Failed to download ACAP: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to download ACAP: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer acapResp.Body.Close()
 
 	if acapResp.StatusCode != 200 {
-		logger.Printf("GitHub returned error: %d", acapResp.StatusCode)
+		logger.Printf("❌ GitHub returned error: %d", acapResp.StatusCode)
 		http.Error(w, fmt.Sprintf("GitHub returned error: %d", acapResp.StatusCode), http.StatusInternalServerError)
 		return
 	}
 
 	acapBytes, err := io.ReadAll(acapResp.Body)
 	if err != nil {
-		logger.Printf("Failed to read ACAP: %v", err)
+		logger.Printf("❌ Failed to read ACAP: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to read ACAP: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	logger.Printf("Downloaded ACAP, size: %d bytes", len(acapBytes))
+	logger.Printf("✅ ACAP downloaded successfully (%d bytes = %.2f MB)", len(acapBytes), float64(len(acapBytes))/1024/1024)
 
 	// Create multipart form-data
+	logger.Printf("Step 2/3: Creating multipart form data...")
 	var buf bytes.Buffer
 	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
 
@@ -805,20 +836,26 @@ func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("\r\n")
 	buf.WriteString("--" + boundary + "--\r\n")
 
+	// CRITICAL FIX: Store body bytes for reuse during authentication
+	bodyBytes := buf.Bytes()
+	logger.Printf("✅ Multipart form-data created (total size: %d bytes = %.2f MB)", len(bodyBytes), float64(len(bodyBytes))/1024/1024)
+
 	// Upload to camera with Digest Auth
-	httpReq, err := http.NewRequest("POST", payload.URL, &buf)
+	logger.Printf("Step 3/3: Uploading to camera (this may take 60-120 seconds)...")
+	httpReq, err := http.NewRequest("POST", payload.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		logger.Printf("Failed to create upload request: %v", err)
+		logger.Printf("❌ Failed to create upload request: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-	// Try Digest auth first
-	uploadResp, err := makeAuthenticatedRequest(httpReq, payload.Username, payload.Password)
+	// Try Digest auth first (pass bodyBytes for reuse)
+	// IMPORTANT: Use uploadClient (3 min timeout) instead of client (30s timeout)
+	uploadResp, err := makeAuthenticatedRequestWithBodyAndClient(httpReq, payload.Username, payload.Password, bodyBytes, uploadClient)
 	if err != nil {
-		logger.Printf("Upload failed: %v", err)
+		logger.Printf("❌ Upload failed: %v", err)
 		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -828,9 +865,14 @@ func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("Upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
 
 	if uploadResp.StatusCode >= 400 {
+		logger.Printf("❌ Camera rejected upload (HTTP %d)", uploadResp.StatusCode)
 		http.Error(w, string(uploadBody), uploadResp.StatusCode)
 		return
 	}
+
+	logger.Printf("========================================")
+	logger.Printf("✅ ACAP UPLOAD SUCCESSFUL!")
+	logger.Printf("========================================")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -869,7 +911,11 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Printf("Uploading license XML to %s (XML length: %d)", payload.URL, len(payload.LicenseXML))
+	logger.Printf("========================================")
+	logger.Printf("LICENSE UPLOAD STARTED")
+	logger.Printf("Target: %s", payload.URL)
+	logger.Printf("License XML length: %d bytes", len(payload.LicenseXML))
+	logger.Printf("========================================")
 
 	// Create multipart form-data with license XML
 	var buf bytes.Buffer
@@ -883,20 +929,26 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("\r\n")
 	buf.WriteString("--" + boundary + "--\r\n")
 
+	// CRITICAL FIX: Store body bytes for reuse during authentication
+	bodyBytes := buf.Bytes()
+	logger.Printf("Created license multipart form-data, size: %d bytes", len(bodyBytes))
+
 	// Upload to camera with Digest Auth
-	httpReq, err := http.NewRequest("POST", payload.URL, &buf)
+	logger.Printf("Uploading license to camera...")
+	httpReq, err := http.NewRequest("POST", payload.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		logger.Printf("Failed to create upload request: %v", err)
+		logger.Printf("❌ Failed to create upload request: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-	// Try Digest auth first
-	uploadResp, err := makeAuthenticatedRequest(httpReq, payload.Username, payload.Password)
+	// Try Digest auth first (pass bodyBytes for reuse)
+	// Use uploadClient for longer timeout (license upload can take time)
+	uploadResp, err := makeAuthenticatedRequestWithBodyAndClient(httpReq, payload.Username, payload.Password, bodyBytes, uploadClient)
 	if err != nil {
-		logger.Printf("License upload failed: %v", err)
+		logger.Printf("❌ License upload failed: %v", err)
 		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -906,9 +958,14 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("License upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
 
 	if uploadResp.StatusCode >= 400 {
+		logger.Printf("❌ Camera rejected license upload (HTTP %d)", uploadResp.StatusCode)
 		http.Error(w, string(uploadBody), uploadResp.StatusCode)
 		return
 	}
+
+	logger.Printf("========================================")
+	logger.Printf("✅ LICENSE UPLOAD SUCCESSFUL!")
+	logger.Printf("========================================")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -965,6 +1022,87 @@ func makeAuthenticatedRequest(req *http.Request, username, password string) (*ht
 	req2.Header.Set("Authorization", digestAuth)
 
 	return client.Do(req2)
+}
+
+// makeAuthenticatedRequestWithBody handles Digest auth with pre-stored body bytes
+// This avoids the body consumption bug when using bytes.Buffer
+func makeAuthenticatedRequestWithBody(req *http.Request, username, password string, bodyBytes []byte) (*http.Response, error) {
+	return makeAuthenticatedRequestWithBodyAndClient(req, username, password, bodyBytes, client)
+}
+
+// makeAuthenticatedRequestWithBodyAndClient handles Digest auth with custom HTTP client
+// Allows using uploadClient for long-running uploads (3 min timeout)
+func makeAuthenticatedRequestWithBodyAndClient(req *http.Request, username, password string, bodyBytes []byte, httpClient *http.Client) (*http.Response, error) {
+	logger.Printf("Attempting authenticated request (body size: %d bytes)", len(bodyBytes))
+
+	// First request to get challenge (send minimal request without body to save bandwidth)
+	req1, err := http.NewRequest(req.Method, req.URL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create challenge request: %w", err)
+	}
+
+	resp, err := httpClient.Do(req1)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != 401 {
+		logger.Printf("No auth required, status: %d", resp.StatusCode)
+		// Close this response and make the real request with body
+		resp.Body.Close()
+
+		req2, err := http.NewRequest(req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+
+		// Copy headers from original request
+		for k, v := range req.Header {
+			req2.Header[k] = v
+		}
+
+		return httpClient.Do(req2)
+	}
+	resp.Body.Close()
+
+	logger.Println("Got 401, parsing auth challenge...")
+
+	// Parse Digest challenge
+	authHeader := resp.Header.Get("WWW-Authenticate")
+	if authHeader == "" {
+		return nil, fmt.Errorf("no WWW-Authenticate header in 401 response")
+	}
+
+	challenge, err := parseDigestChallenge(authHeader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse auth challenge: %w", err)
+	}
+
+	logger.Printf("Parsed challenge: realm=%s, nonce=%s", challenge.Realm, challenge.Nonce[:10]+"...")
+
+	// Create authenticated request with full body
+	req2, err := http.NewRequest(req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authenticated request: %w", err)
+	}
+
+	// Copy headers from original request
+	for k, v := range req.Header {
+		req2.Header[k] = v
+	}
+
+	// Calculate and add Digest auth
+	digestAuth := calculateDigestAuthFromChallenge(&ProxyRequest{
+		URL:      req.URL.String(),
+		Method:   req.Method,
+		Username: username,
+		Password: password,
+	}, challenge)
+
+	req2.Header.Set("Authorization", digestAuth)
+
+	logger.Printf("Sending authenticated request with %d byte body...", len(bodyBytes))
+	return httpClient.Do(req2)
 }
 
 // calculateDigestAuthFromChallenge calculates Digest auth header

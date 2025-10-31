@@ -5,11 +5,31 @@
   "description": "Connect to local network cameras from your browser. Requires companion app installation.",
   "permissions": [
     "nativeMessaging",
-    "storage"
+    "storage",
+    "tabs",
+    "offscreen"
   ],
   "host_permissions": [
     "http://localhost:*/*",
-    "http://127.0.0.1:*/*"
+    "http://127.0.0.1:*/*",
+    "https://anava-ai.web.app/*",
+    "https://anava-ai.firebaseapp.com/*",
+    "https://*.anava.cloud/*",
+    "https://api.github.com/*",
+    "https://github.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:5173/*",
+        "http://localhost:3000/*",
+        "https://anava-ai.web.app/*",
+        "https://anava-ai.firebaseapp.com/*",
+        "https://*.anava.cloud/*"
+      ],
+      "js": ["dist/content-script.js"],
+      "run_at": "document_start"
+    }
   ],
   "externally_connectable": {
     "matches": [
@@ -23,15 +43,15 @@
     "accepts_tls_channel_id": false
   },
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "dist/popup.html",
     "default_title": "Anava Local Connector"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "dist/background.js"
   },
   "icons": {
-    "16": "icon16.png",
-    "48": "icon48.png",
-    "128": "icon128.png"
+    "16": "dist/icon16.png",
+    "48": "dist/icon48.png",
+    "128": "dist/icon128.png"
   }
 }

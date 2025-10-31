@@ -24,11 +24,13 @@ interface ConfigDiscoveryResult {
 /**
  * Discover configuration from current page
  */
-async function discoverConfiguration(): Promise<ConfigDiscoveryResult> {
+async function discoverConfiguration(verbose = false): Promise<ConfigDiscoveryResult> {
   const configUrl = `${window.location.origin}/.well-known/spa-connector-config.json`;
 
   try {
-    console.log('[Anava Connector] Checking for configuration at:', configUrl);
+    if (verbose) {
+      console.log('[Anava Connector] Checking for configuration at:', configUrl);
+    }
 
     const response = await fetch(configUrl, {
       method: 'GET',
@@ -41,7 +43,10 @@ async function discoverConfiguration(): Promise<ConfigDiscoveryResult> {
     });
 
     if (!response.ok) {
-      console.log('[Anava Connector] No configuration found (HTTP', response.status, ')');
+      // Silently fail for 404 - this is normal for sites without the config endpoint
+      if (response.status !== 404) {
+        console.log('[Anava Connector] No configuration found (HTTP', response.status, ')');
+      }
       return {
         success: false,
         error: `HTTP ${response.status}: ${response.statusText}`,
@@ -63,20 +68,31 @@ async function discoverConfiguration(): Promise<ConfigDiscoveryResult> {
 
     console.log('[Anava Connector] Configuration discovered successfully:', config);
 
-    // Store in extension storage
-    chrome.storage.local.set({
-      discoveredConfig: config,
-      discoveryUrl: configUrl,
-      discoveryTime: Date.now(),
-    });
+    // Store in extension storage (if available)
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        chrome.storage.local.set({
+          discoveredConfig: config,
+          discoveryUrl: configUrl,
+          discoveryTime: Date.now(),
+        });
 
-    // Notify background script
-    chrome.runtime.sendMessage({
-      type: 'CONFIG_DISCOVERED',
-      config,
-      url: configUrl,
-      origin: window.location.origin,
-    });
+        // Notify background script
+        if (chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({
+            type: 'CONFIG_DISCOVERED',
+            config,
+            url: configUrl,
+            origin: window.location.origin,
+          });
+        }
+      } catch (error) {
+        // Extension context invalidated (extension was reloaded) - ignore silently
+        if (error instanceof Error && !error.message.includes('Extension context invalidated')) {
+          console.error('[Anava Connector] Error storing config:', error);
+        }
+      }
+    }
 
     // Notify the page (for web app integration)
     window.postMessage({
@@ -91,7 +107,11 @@ async function discoverConfiguration(): Promise<ConfigDiscoveryResult> {
     };
 
   } catch (error) {
-    console.log('[Anava Connector] Configuration discovery failed:', error);
+    // Silently fail - this is normal for sites without the config endpoint
+    // Only log if it's not a JSON parse error (which indicates 404 HTML response)
+    if (error instanceof Error && !error.message.includes('Unexpected token')) {
+      console.log('[Anava Connector] Configuration discovery failed:', error);
+    }
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -145,59 +165,90 @@ window.addEventListener('message', (event) => {
 
   const message = event.data;
 
+  // Safety check: Ensure chrome APIs are available
+  if (typeof chrome === 'undefined' ||
+      !chrome.storage ||
+      !chrome.storage.local ||
+      !chrome.runtime ||
+      !chrome.runtime.sendMessage) {
+    console.error('[Anava Connector] Chrome APIs not available - extension may need to be reloaded');
+    return;
+  }
+
   if (message.type === 'ANAVA_CONNECTOR_REQUEST_CONFIG') {
     // Page is requesting configuration - send it if we have it
-    chrome.storage.local.get(['discoveredConfig'], (result) => {
-      if (result.discoveredConfig) {
-        window.postMessage({
-          type: 'ANAVA_CONNECTOR_CONFIG_DISCOVERED',
-          config: result.discoveredConfig,
-        }, window.location.origin);
-      }
-    });
+    try {
+      chrome.storage.local.get(['discoveredConfig'], (result) => {
+        if (result.discoveredConfig) {
+          window.postMessage({
+            type: 'ANAVA_CONNECTOR_CONFIG_DISCOVERED',
+            config: result.discoveredConfig,
+          }, window.location.origin);
+        }
+      });
+    } catch (error) {
+      // Extension context invalidated - ignore silently
+    }
   } else if (message.type === 'ANAVA_CONNECTOR_SCAN_CAMERAS') {
     // Forward camera scan request to background script
-    chrome.runtime.sendMessage({
-      type: 'SCAN_CAMERAS',
-      ...message.payload,
-    });
+    try {
+      chrome.runtime.sendMessage({
+        type: 'SCAN_CAMERAS',
+        ...message.payload,
+      });
+    } catch (error) {
+      // Extension context invalidated - ignore silently
+    }
   } else if (message.type === 'ANAVA_CONNECTOR_AUTHENTICATE') {
     // Forward authentication request to background script
-    chrome.runtime.sendMessage({
-      type: 'AUTHENTICATE_WITH_BACKEND',
-      ...message.payload,
-    });
+    try {
+      chrome.runtime.sendMessage({
+        type: 'AUTHENTICATE_WITH_BACKEND',
+        ...message.payload,
+      });
+    } catch (error) {
+      // Extension context invalidated - ignore silently
+    }
   }
 });
 
 /**
  * Listen for messages from background script
  */
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'CAMERAS_DISCOVERED') {
-    // Forward camera discovery results to page
-    window.postMessage({
-      type: 'ANAVA_CONNECTOR_CAMERAS_DISCOVERED',
-      cameras: message.cameras,
-    }, window.location.origin);
-  } else if (message.type === 'AUTHENTICATION_RESULT') {
-    // Forward authentication result to page
-    window.postMessage({
-      type: 'ANAVA_CONNECTOR_AUTHENTICATION_RESULT',
-      success: message.success,
-      token: message.token,
-      error: message.error,
-    }, window.location.origin);
-  } else if (message.type === 'REQUEST_CONFIG_DISCOVERY') {
-    // Background script requesting config discovery
-    discoverConfiguration().then(result => {
-      sendResponse(result);
-    });
-    return true; // Keep channel open for async response
-  }
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'scan_progress') {
+      // Forward scan progress to page (for web app's progress UI)
+      console.log('[Content Script] Relaying scan progress to page:', message.data);
+      window.postMessage({
+        type: 'scan_progress',
+        data: message.data
+      }, window.location.origin);
+    } else if (message.type === 'CAMERAS_DISCOVERED') {
+      // Forward camera discovery results to page
+      window.postMessage({
+        type: 'ANAVA_CONNECTOR_CAMERAS_DISCOVERED',
+        cameras: message.cameras,
+      }, window.location.origin);
+    } else if (message.type === 'AUTHENTICATION_RESULT') {
+      // Forward authentication result to page
+      window.postMessage({
+        type: 'ANAVA_CONNECTOR_AUTHENTICATION_RESULT',
+        success: message.success,
+        token: message.token,
+        error: message.error,
+      }, window.location.origin);
+    } else if (message.type === 'REQUEST_CONFIG_DISCOVERY') {
+      // Background script requesting config discovery
+      discoverConfiguration().then(result => {
+        sendResponse(result);
+      });
+      return true; // Keep channel open for async response
+    }
 
-  return false;
-});
+    return false;
+  });
+}
 
 /**
  * Run discovery on page load
@@ -217,15 +268,23 @@ if (document.readyState === 'loading') {
  * (in case user navigated away and back)
  */
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
+  if (document.visibilityState === 'visible' &&
+      typeof chrome !== 'undefined' &&
+      chrome.storage &&
+      chrome.storage.local) {
     // Check if we need to re-discover (e.g., config older than 5 minutes)
-    chrome.storage.local.get(['discoveryTime'], (result) => {
-      const age = Date.now() - (result.discoveryTime || 0);
-      if (age > 5 * 60 * 1000) {
-        console.log('[Anava Connector] Re-discovering configuration (cache expired)');
-        discoverConfiguration();
-      }
-    });
+    try {
+      chrome.storage.local.get(['discoveryTime'], (result) => {
+        const age = Date.now() - (result.discoveryTime || 0);
+        if (age > 5 * 60 * 1000) {
+          // Silently re-discover (no verbose logging)
+          discoverConfiguration(false);
+        }
+      });
+    } catch (error) {
+      // Extension context invalidated (extension was reloaded)
+      // This is normal - just ignore silently
+    }
   }
 });
 

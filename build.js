@@ -45,8 +45,27 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 3: Copy background script (using root background.js, not TypeScript)
-  console.log('3️⃣  Copying background script...');
+  // Step 3: Build popup script (bundle with services)
+  console.log('3️⃣  Building popup script...');
+  try {
+    await esbuild.build({
+      entryPoints: ['popup-new.js'],
+      bundle: true,
+      outfile: 'dist/popup.js',
+      platform: 'browser',
+      target: 'es2020',
+      format: 'iife',
+      sourcemap: false,
+      minify: false,
+    });
+    console.log('✅ Popup script built\n');
+  } catch (error) {
+    console.error('❌ Popup script build failed:', error);
+    process.exit(1);
+  }
+
+  // Step 4: Copy background script (using root background.js, not TypeScript)
+  console.log('4️⃣  Copying background script...');
   try {
     fs.copyFileSync('background.js', 'dist/background.js');
     console.log('✅ Background script copied\n');
@@ -55,13 +74,12 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 4: Copy static files
-  console.log('4️⃣  Copying static files...');
+  // Step 5: Copy static files
+  console.log('5️⃣  Copying static files...');
   const staticFiles = [
     'manifest.json',
     'popup.html',
     'popup.css',
-    'popup.js',
     'rules.json',
     'license-worker.html'
   ];
@@ -77,13 +95,14 @@ async function build() {
     process.exit(1);
   }
 
-  console.log('🎉 Build complete! Extension ready in dist/\n');
+  console.log('🎉 Build complete! Extension ready in ROOT directory\n');
   console.log('📦 Next steps:');
   console.log('   1. Go to chrome://extensions');
   console.log('   2. Click "Load unpacked"');
-  console.log('   3. Select the dist/ folder');
+  console.log('   3. Select the ROOT directory (anava-camera-extension)');
   console.log('   4. Copy the extension ID');
   console.log('   5. Add to .env.local: VITE_EXTENSION_ID=<id>\n');
+  console.log('⚠️  NOTE: Load from ROOT, not from dist/ folder!');
 }
 
 build().catch(err => {

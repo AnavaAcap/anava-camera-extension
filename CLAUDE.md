@@ -48,20 +48,32 @@ Camera (192.168.x.x)
 ### Setup Commands
 
 ```bash
-# ONE-TIME INSTALL (builds both binaries + sets up LaunchAgent)
+# ONE-TIME INSTALL (builds proxy binary)
 ./install-proxy.sh
 
-# Manual control (if needed)
-./start-proxy.sh   # Start proxy server
-./stop-proxy.sh    # Stop proxy server
+# Start/Stop Proxy (Manual Control)
+./start-proxy.sh   # Start proxy in background
+./stop-proxy.sh    # Stop proxy
 
-# Verify running
+# Why manual instead of LaunchAgent?
+# macOS LaunchAgent processes have network restrictions that prevent
+# them from accessing local network devices (192.168.x.x). The proxy
+# works perfectly when launched manually from Terminal.
+# See NETWORK_ISSUE_RESOLVED.md for technical details.
+
+# Verify proxy is running
 curl http://127.0.0.1:9876/health   # Should return {"status":"ok"}
-ps aux | grep camera-proxy-server   # Check process
+
+# Test with specific camera
+curl -X POST http://127.0.0.1:9876/proxy \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://192.168.50.156/axis-cgi/basicdeviceinfo.cgi","method":"POST","username":"anava","password":"baton","body":{"apiVersion":"1.0","method":"getProperties","params":{"propertyList":["Brand"]}}}'
 
 # Check logs
-tail -f ~/Library/Logs/anava-camera-proxy-server.log  # Proxy server
-tail -f ~/Library/Logs/anava-native-host.log          # Native messaging host
+tail -f ~/Library/Logs/anava-camera-proxy-server.log
+
+# Check proxy PID
+cat ~/Library/Application\ Support/Anava/proxy.pid
 ```
 
 ### Why This Architecture?
@@ -320,8 +332,9 @@ anava-camera-extension/
 ├── tsconfig.json                    # TypeScript configuration
 ├── popup.html/css/js                # Extension UI
 ├── background.js                    # Service worker
-├── install-proxy.sh                 # ONE-TIME INSTALL (recommended)
-├── start-proxy.sh / stop-proxy.sh   # Manual proxy control
+├── install-local-connector.sh       # ONE-TIME INSTALL (recommended)
+├── test-proxy.sh                    # Test suite for proxy validation
+├── com.anava.local-connector-extension.plist  # LaunchAgent configuration
 ├── src/
 │   ├── services/
 │   │   ├── CameraAuthentication.ts  # Native messaging client
@@ -346,6 +359,81 @@ anava-camera-extension/
 - Manifest references scripts in `dist/` (created by build)
 - TypeScript source in `src/` is compiled to `dist/`
 - Static files (HTML/CSS/background.js) are copied to `dist/`
+
+## Troubleshooting Common Issues
+
+### Proxy Server Not Starting
+
+**Symptom**: `curl http://127.0.0.1:9876/health` fails or returns connection refused
+
+**Solutions**:
+1. Check if another process is using port 9876: `lsof -i :9876`
+2. Check error logs: `tail -20 ~/Library/Logs/anava-local-connector-error.log`
+3. Verify binary exists: `ls -lh build/local-connector`
+4. Try manual start: `./build/local-connector` (should print "listening on...")
+5. Reinstall: `./install-local-connector.sh`
+
+### Camera Scanning Returns 0 Cameras
+
+**Symptom**: Network scan completes but finds no cameras
+
+**Solutions**:
+1. **Verify proxy is running**: `./test-proxy.sh`
+2. **Check network range**: Are cameras on the same subnet you're scanning?
+   - Find your Mac's IP: `ifconfig | grep "inet " | grep -v 127.0.0.1`
+   - Example: If Mac is 192.168.50.10, scan 192.168.50.0/24
+3. **Test specific camera**: `./test-proxy.sh 192.168.50.156 anava baton`
+4. **Check camera connectivity**: `ping 192.168.50.156`
+5. **Verify credentials**: Default is `anava`/`baton`
+6. **Check proxy logs**: `tail -f ~/Library/Logs/anava-local-connector.log`
+   - Look for "no route to host" (wrong network)
+   - Look for "timeout" (camera offline)
+   - Look for "401" (wrong credentials)
+
+### HTTP 500 Errors During Scan
+
+**Symptom**: Background console shows "HTTP 500" errors
+
+**Root Cause**: Proxy is forwarding camera connection errors (timeouts, refused connections)
+
+**Solutions**:
+1. These are EXPECTED for IPs without cameras
+2. Only worry if ALL IPs return 500
+3. Check proxy logs to see actual camera errors
+4. If many "no route to host": wrong network range
+5. If many "timeout": cameras may be on different subnet
+
+### Extension Shows Red Dot (Disconnected)
+
+**Symptom**: Extension popup shows red status indicator
+
+**Solutions**:
+1. Run installation: `./install-local-connector.sh`
+2. Reload extension at chrome://extensions
+3. Check LaunchAgent: `launchctl list | grep anava`
+4. Verify proxy health: `curl http://127.0.0.1:9876/health`
+
+### LaunchAgent Not Loading
+
+**Symptom**: `launchctl list | grep anava` returns nothing
+
+**Solutions**:
+1. Check plist exists: `ls ~/Library/LaunchAgents/com.anava.local-connector-extension.plist`
+2. Validate plist: `plutil ~/Library/LaunchAgents/com.anava.local-connector-extension.plist`
+3. Check permissions: plist should be readable
+4. Manual load: `launchctl load ~/Library/LaunchAgents/com.anava.local-connector-extension.plist`
+5. Check logs for LaunchAgent errors: `tail ~/Library/Logs/anava-local-connector-error.log`
+
+### Proxy Crashes or Restarts Frequently
+
+**Symptom**: PID keeps changing, logs show crashes
+
+**Solutions**:
+1. Check error log: `tail -50 ~/Library/Logs/anava-local-connector-error.log`
+2. Look for Go panics or fatal errors
+3. Verify Go version: `go version` (should be 1.19+)
+4. Rebuild proxy: `cd proxy-server && go build -o ../build/local-connector main.go`
+5. Check system resources: `top` (memory/CPU issues)
 
 ## Key Learnings (For Future Sessions)
 

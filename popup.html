@@ -19,6 +19,31 @@
       </div>
     </header>
 
+    <!-- Error Banner (hidden by default) -->
+    <div id="error-banner" class="error-banner" style="display: none;" role="alert" aria-live="assertive">
+      <div class="error-icon">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M10 6V11M10 14H10.01M19 10C19 14.9706 14.9706 19 10 19C5.02944 19 1 14.9706 1 10C1 5.02944 5.02944 1 10 1C14.9706 1 19 5.02944 19 10Z"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="error-content">
+        <h3 class="error-title" id="error-title">Error</h3>
+        <p class="error-message" id="error-message">An error occurred</p>
+        <p class="error-suggestion" id="error-suggestion" style="display: none;"></p>
+        <div class="error-actions">
+          <button id="error-action-btn" class="btn-error-action" style="display: none;">
+            <span id="error-action-label">Action</span>
+          </button>
+          <button id="error-dismiss-btn" class="btn-error-dismiss">Dismiss</button>
+        </div>
+        <details class="error-details" id="error-details-container" style="display: none;">
+          <summary>Technical Details</summary>
+          <pre id="error-technical-details"></pre>
+        </details>
+      </div>
+    </div>
+
     <!-- Status Card -->
     <div class="status-card">
       <div class="status-indicator" role="status" aria-live="polite" aria-atomic="true">

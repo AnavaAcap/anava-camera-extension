@@ -472,7 +472,188 @@ body {
 }
 
 /* ========================================================================
-   ALERT BANNER
+   ERROR BANNER (NEW)
+   ======================================================================== */
+
+.error-banner {
+  margin: 16px;
+  padding: 16px;
+  border-radius: 10px;
+  display: flex;
+  gap: 12px;
+  border: 1px solid;
+  animation: slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.error-banner.severity-warning {
+  background: rgba(245, 158, 11, 0.05);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.error-banner.severity-info {
+  background: rgba(59, 130, 246, 0.05);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.error-icon {
+  flex-shrink: 0;
+  color: var(--status-error);
+  margin-top: 2px;
+}
+
+.error-banner.severity-warning .error-icon {
+  color: var(--status-warning);
+}
+
+.error-banner.severity-info .error-icon {
+  color: #3b82f6;
+}
+
+.error-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.error-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: #991b1b;
+}
+
+.error-banner.severity-warning .error-title {
+  color: #92400e;
+}
+
+.error-banner.severity-info .error-title {
+  color: #1e40af;
+}
+
+.error-message {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 8px;
+  color: #dc2626;
+}
+
+.error-banner.severity-warning .error-message {
+  color: #b45309;
+}
+
+.error-banner.severity-info .error-message {
+  color: #2563eb;
+}
+
+.error-suggestion {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.error-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.btn-error-action {
+  flex: 1;
+  padding: 8px 14px;
+  background: var(--status-error);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.error-banner.severity-warning .btn-error-action {
+  background: var(--status-warning);
+}
+
+.error-banner.severity-info .btn-error-action {
+  background: #3b82f6;
+}
+
+.btn-error-action:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.btn-error-action:active {
+  transform: translateY(0);
+}
+
+.btn-error-dismiss {
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--neutral-600);
+  border: 1px solid var(--neutral-300);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-error-dismiss:hover {
+  background: var(--neutral-100);
+  border-color: var(--neutral-400);
+}
+
+.error-details {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.error-details summary {
+  cursor: pointer;
+  color: var(--neutral-600);
+  font-weight: 500;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.error-details summary:hover {
+  color: var(--neutral-900);
+}
+
+.error-details pre {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: var(--neutral-100);
+  border-radius: 4px;
+  border: 1px solid var(--neutral-200);
+  font-family: var(--font-family-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--neutral-700);
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========================================================================
+   ALERT BANNER (LEGACY - Keep for migration notice)
    ======================================================================== */
 
 .alert-banner {
