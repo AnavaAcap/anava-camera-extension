@@ -133,6 +133,20 @@ func generateSecureNonce() string {
 	return hex.EncodeToString(b)
 }
 
+// generateRandomBoundary generates a random boundary string like Electron does
+// Mimics Math.random().toString(36).substring(2) from JavaScript
+func generateRandomBoundary() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	// Convert to base36-ish string (alphanumeric)
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, 16)
+	for i := range result {
+		result[i] = chars[b[i%len(b)]%uint8(len(chars))]
+	}
+	return string(result)
+}
+
 // sanitizeCredential redacts sensitive credential information for logging
 // Shows first and last character only, e.g., "anava" -> "a***a"
 func sanitizeCredential(credential string) string {
@@ -918,20 +932,42 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("========================================")
 
 	// Create multipart form-data with license XML
+	// CRITICAL: Match EXACT format from Electron installer (cameraConfigurationService.ts lines 2424-2435)
 	var buf bytes.Buffer
-	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+	// Generate random boundary like Electron does (not that it should matter, but let's match exactly)
+	boundary := "----WebKitFormBoundary" + generateRandomBoundary()
 
+	// CRITICAL: Match EXACT Electron format from cameraConfigurationService.ts
+	// Array: ["--boundary", "Content-Disposition...", "Content-Type: text/xml", "", xmlContent, "--boundary--", ""]
+	// .join("\r\n") produces: item0\r\nitem1\r\nitem2\r\nitem3\r\nitem4\r\nitem5\r\nitem6
+	// Which means: --boundary\r\nContent-Disposition...\r\nContent-Type...\r\n\r\nxmlContent\r\n--boundary--\r\n
 	buf.WriteString("--" + boundary + "\r\n")
 	buf.WriteString("Content-Disposition: form-data; name=\"fileData\"; filename=\"license.xml\"\r\n")
 	buf.WriteString("Content-Type: text/xml\r\n")
-	buf.WriteString("\r\n")
+	buf.WriteString("\r\n") // Empty line after headers (this is the "" element)
 	buf.WriteString(payload.LicenseXML)
-	buf.WriteString("\r\n")
-	buf.WriteString("--" + boundary + "--\r\n")
+	buf.WriteString("\r\n") // CRLF after content
+	buf.WriteString("--" + boundary + "--\r\n") // Closing boundary + CRLF (last element "" adds no extra CRLF)
 
 	// CRITICAL FIX: Store body bytes for reuse during authentication
 	bodyBytes := buf.Bytes()
 	logger.Printf("Created license multipart form-data, size: %d bytes", len(bodyBytes))
+
+	// Log first 500 bytes as both string and hex
+	firstBytes := 500
+	if len(bodyBytes) < firstBytes {
+		firstBytes = len(bodyBytes)
+	}
+	logger.Printf("Multipart body (first %d bytes as string): %q", firstBytes, bodyBytes[:firstBytes])
+	logger.Printf("Multipart body (first %d bytes as hex): %x", firstBytes, bodyBytes[:firstBytes])
+
+	// Log last 200 bytes
+	lastStart := len(bodyBytes) - 200
+	if lastStart < 0 {
+		lastStart = 0
+	}
+	logger.Printf("Multipart body (last %d bytes as string): %q", len(bodyBytes)-lastStart, bodyBytes[lastStart:])
+	logger.Printf("Multipart body (last %d bytes as hex): %x", len(bodyBytes)-lastStart, bodyBytes[lastStart:])
 
 	// Upload to camera with Digest Auth
 	logger.Printf("Uploading license to camera...")
@@ -943,6 +979,10 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+	logger.Printf("Request headers: Content-Type=%s", httpReq.Header.Get("Content-Type"))
+	logger.Printf("Request URL: %s", httpReq.URL.String())
+	logger.Printf("Request method: %s", httpReq.Method)
 
 	// Try Digest auth first (pass bodyBytes for reuse)
 	// Use uploadClient for longer timeout (license upload can take time)
@@ -956,6 +996,15 @@ func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 
 	uploadBody, _ := io.ReadAll(uploadResp.Body)
 	logger.Printf("License upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
+
+	// CRITICAL: Check for error codes in body even if HTTP 200
+	bodyText := string(uploadBody)
+	if strings.Contains(bodyText, "Error:") && !strings.Contains(bodyText, "Error: 0") && !strings.Contains(bodyText, "Error: 30") {
+		logger.Printf("❌ Camera returned error in body despite HTTP 200")
+		logger.Printf("Response body: %s", bodyText)
+		http.Error(w, bodyText, http.StatusBadRequest)
+		return
+	}
 
 	if uploadResp.StatusCode >= 400 {
 		logger.Printf("❌ Camera rejected license upload (HTTP %d)", uploadResp.StatusCode)

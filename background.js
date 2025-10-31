@@ -135,8 +135,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'generate_license':
-      // Forward to offscreen document (license worker)
-      // This is handled by the offscreen document itself
+      // This message is for the offscreen document (license-worker.html)
+      // Don't handle it here - let it pass through to the offscreen document
+      console.log('[Background] Ignoring generate_license - will be handled by offscreen document');
       return false;
 
     default:
@@ -470,8 +471,9 @@ function extractSocType(socString) {
 }
 
 /**
- * Complete ACAP Deployment Workflow (6 Steps)
- * Replicates electron installer's rapid deployment pattern
+ * Complete ACAP Deployment Workflow (4 Steps)
+ * CRITICAL: Matches Electron installer's exact license activation sequence
+ * Step 2 now includes app start (was previously Step 3)
  */
 async function handleDeployAcap(payload) {
   const { cameraIp, credentials, config } = payload;
@@ -502,40 +504,30 @@ async function handleDeployAcap(payload) {
     }
     await sleep(3000); // Wait 3s for installation
 
-    // Step 2: Activate license
+    // Step 2: Activate license (this now includes starting the app)
     console.log('[Background] Step 2: Activating license...');
     try {
       await activateLicense(cameraIp, credentials, config.licenseKey, cameraInfo.mac);
-      console.log('[Background] ✅ License activated successfully');
+      console.log('[Background] ✅ License activated and app started successfully');
     } catch (error) {
       console.error('[Background] ❌ Step 2 failed:', error.message);
       throw new Error(`Step 2 (Activate License): ${error.message}`);
     }
-    await sleep(3000); // Wait 3s for processing
+    await sleep(2000); // Wait 2s for app to stabilize
 
-    // Step 3: Ensure ACAP is running
-    console.log('[Background] Step 3: Ensuring ACAP is running...');
-    try {
-      await ensureAcapRunning(cameraIp, credentials);
-      console.log('[Background] ✅ ACAP is running');
-    } catch (error) {
-      console.error('[Background] ❌ Step 3 failed:', error.message);
-      throw new Error(`Step 3 (Start ACAP): ${error.message}`);
-    }
-
-    // Step 4: Push configuration
-    console.log('[Background] Step 4: Pushing configuration...');
+    // Step 3: Push configuration
+    console.log('[Background] Step 3: Pushing configuration...');
     try {
       await pushConfiguration(cameraIp, credentials, config);
       console.log('[Background] ✅ Configuration pushed successfully');
     } catch (error) {
-      console.error('[Background] ❌ Step 4 failed:', error.message);
-      throw new Error(`Step 4 (Push Config): ${error.message}`);
+      console.error('[Background] ❌ Step 3 failed:', error.message);
+      throw new Error(`Step 3 (Push Config): ${error.message}`);
     }
     await sleep(2000); // Wait 2s for verification
 
-    // Step 5: Validate deployment
-    console.log('[Background] Step 5: Validating deployment...');
+    // Step 4: Validate deployment
+    console.log('[Background] Step 4: Validating deployment...');
     try {
       const validation = await validateDeployment(cameraIp, credentials);
       console.log('[Background] ✅ Validation result:', validation);
@@ -556,8 +548,8 @@ async function handleDeployAcap(payload) {
         }
       };
     } catch (error) {
-      console.error('[Background] ❌ Step 5 failed:', error.message);
-      throw new Error(`Step 5 (Validate): ${error.message}`);
+      console.error('[Background] ❌ Step 4 failed:', error.message);
+      throw new Error(`Step 4 (Validate): ${error.message}`);
     }
 
   } catch (error) {
@@ -666,40 +658,91 @@ async function generateLicenseWithAxisSDK(deviceId, licenseKey) {
     // Create offscreen document if it doesn't exist
     const existingContexts = await chrome.runtime.getContexts({
       contextTypes: ['OFFSCREEN_DOCUMENT'],
-      documentUrls: [chrome.runtime.getURL('license-worker.html')]
+      documentUrls: [chrome.runtime.getURL('dist/license-worker.html')]
     });
 
     if (existingContexts.length === 0) {
       console.log('[Background] Creating offscreen document for Axis SDK');
       await chrome.offscreen.createDocument({
-        url: 'license-worker.html',
+        url: 'dist/license-worker.html',
         reasons: ['DOM_SCRAPING'], // Closest reason for loading external SDK
         justification: 'Load Axis SDK to generate signed license XML'
       });
 
-      // Wait for SDK to initialize
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait for SDK to initialize using polling with timeout
+      console.log('[Background] Waiting for Axis SDK to load...');
+      const maxWaitTime = 15000; // 15 seconds max
+      const startTime = Date.now();
+      let sdkReady = false;
+
+      while (!sdkReady && (Date.now() - startTime) < maxWaitTime) {
+        try {
+          // Try to ping the offscreen document
+          const pingResponse = await new Promise((resolve) => {
+            chrome.runtime.sendMessage(
+              { command: 'ping_license_worker' },
+              (response) => {
+                // Ignore errors, just check if we get a response
+                if (chrome.runtime.lastError) {
+                  resolve(null);
+                } else {
+                  resolve(response);
+                }
+              }
+            );
+            // Add timeout to prevent hanging
+            setTimeout(() => resolve(null), 1000);
+          });
+
+          if (pingResponse && pingResponse.ready) {
+            console.log('[Background] ✅ License worker is ready');
+            sdkReady = true;
+            break;
+          }
+        } catch (e) {
+          // Ignore errors, continue polling
+        }
+
+        // Wait 500ms before next check
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      if (!sdkReady) {
+        throw new Error('License worker did not become ready within 15 seconds');
+      }
+    } else {
+      console.log('[Background] Offscreen document already exists');
     }
 
-    // Send message to offscreen document
+    // Send message to ALL extension contexts (including offscreen)
+    // Use chrome.runtime.sendMessage without target - it broadcasts to all contexts
+    console.log('[Background] Sending license generation request to offscreen document');
+
     return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('License generation timed out after 30 seconds'));
+      }, 30000);
+
       chrome.runtime.sendMessage(
         {
           command: 'generate_license',
           payload: { deviceId, licenseKey }
         },
         response => {
+          clearTimeout(timeout);
+
           if (chrome.runtime.lastError) {
             reject(new Error(`License worker error: ${chrome.runtime.lastError.message}`));
             return;
           }
 
           if (!response) {
-            reject(new Error('No response from license worker'));
+            reject(new Error('No response from license worker - offscreen document may not be loaded'));
             return;
           }
 
           if (response.success) {
+            console.log('[Background] License XML received from worker');
             resolve(response.licenseXML);
           } else {
             reject(new Error(response.error || 'License generation failed'));
@@ -774,17 +817,61 @@ async function getAcapDownloadUrl(architecture, osVersion) {
 
 /**
  * Step 2: Activate license via Axis SDK (direct integration)
+ * CRITICAL: Matches Electron installer's exact sequence (cameraConfigurationService.ts lines 1354-1726)
  */
 async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
-  // Generate license XML via license worker (loads Axis SDK)
-  console.log('[Background] Generating license XML via Axis SDK...');
+  console.log('[Background] ========================================');
+  console.log('[Background] LICENSE ACTIVATION STARTED');
+  console.log('[Background] Camera IP:', cameraIp);
+  console.log('[Background] Device ID:', deviceId);
+  console.log('[Background] License Key:', licenseKey.substring(0, 10) + '...');
+  console.log('[Background] ========================================');
 
+  // First, check if the application is already licensed (Electron pattern)
+  console.log('[Background] Checking if ACAP is already licensed...');
+  const checkResponse = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/applications/list.cgi`,
+      method: 'GET',
+      username: credentials.username,
+      password: credentials.password,
+      body: {}
+    })
+  });
+
+  if (checkResponse.ok) {
+    const checkData = await checkResponse.json();
+    const checkText = checkData.data?.text || '';
+
+    // Check if already licensed (same regex as Electron line 1436-1438)
+    const licenseMatch = checkText.match(/Name="BatonAnalytic"[^>]*License="([^"]*)"/i);
+
+    if (licenseMatch && licenseMatch[1] === 'Valid') {
+      console.log('[Background] BatonAnalytic is already licensed, starting app and returning...');
+
+      // Even if licensed, ensure app is running (Electron lines 1446-1465)
+      await ensureAcapRunning(cameraIp, credentials);
+
+      console.log('[Background] ========================================');
+      console.log('[Background] ✅ ALREADY LICENSED - SKIPPING LICENSE ACTIVATION');
+      console.log('[Background] ========================================');
+      return;
+    }
+  }
+
+  // Not licensed yet - proceed with activation
+  console.log('[Background] Generating license XML via Axis SDK...');
   const licenseXML = await generateLicenseWithAxisSDK(deviceId, licenseKey);
-  console.log('[Background] License XML generated, length:', licenseXML.length);
+  console.log('[Background] ✅ License XML generated, length:', licenseXML.length);
+  console.log('[Background] License XML (first 200 chars):', licenseXML.substring(0, 200));
 
   // Upload license XML to camera
   const uploadUrl = `https://${cameraIp}/axis-cgi/applications/license.cgi?action=uploadlicensekey&package=BatonAnalytic`;
+  console.log('[Background] Upload URL:', uploadUrl);
 
+  console.log('[Background] Uploading license to camera...');
   const uploadResponse = await fetch('http://127.0.0.1:9876/upload-license', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -797,17 +884,81 @@ async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
     signal: AbortSignal.timeout(320000) // 320 second timeout (allow buffer beyond proxy's 300s)
   });
 
+  console.log('[Background] Upload response status:', uploadResponse.status);
+  console.log('[Background] Upload response ok:', uploadResponse.ok);
+
   if (!uploadResponse.ok) {
     const error = await uploadResponse.text();
+    console.error('[Background] ❌ License upload failed with status:', uploadResponse.status);
+    console.error('[Background] Error response:', error);
+
     // Check if already licensed (Error: 30)
     if (error.includes('Error: 30')) {
-      console.log('[Background] Already licensed, continuing...');
-      return;
+      console.log('[Background] Already licensed (Error: 30), continuing to verification...');
+      // Still verify even if already licensed
+    } else {
+      throw new Error(`License upload failed (HTTP ${uploadResponse.status}): ${error}`);
     }
-    throw new Error(`License upload failed: ${error}`);
+  } else {
+    const responseData = await uploadResponse.json();
+    console.log('[Background] ✅ License upload accepted by camera');
+    console.log('[Background] Response data:', responseData);
   }
 
-  console.log('[Background] License uploaded successfully');
+  // CRITICAL: Wait for camera to process the license (Electron line 1589)
+  console.log('[Background] Waiting 3 seconds for camera to process license...');
+  await sleep(3000);
+
+  // CRITICAL: Verify the license is actually active (Electron lines 1592-1629)
+  console.log('[Background] Verifying license status...');
+  const verifyResponse = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/applications/list.cgi`,
+      method: 'GET',
+      username: credentials.username,
+      password: credentials.password,
+      body: {}
+    })
+  });
+
+  if (!verifyResponse.ok) {
+    console.warn('[Background] ⚠️ Could not verify license status (HTTP', verifyResponse.status, ')');
+    throw new Error(`License verification failed: HTTP ${verifyResponse.status}`);
+  }
+
+  const verifyData = await verifyResponse.json();
+  const verifyText = verifyData.data?.text || '';
+
+  console.log('[Background] License verification response (first 1000 chars):');
+  console.log(verifyText.substring(0, 1000));
+
+  // Check specifically for BatonAnalytic's license status (not other apps!)
+  // Match: Name="BatonAnalytic" ... License="Valid" (allowing any content between)
+  const batonAnalyticMatch = verifyText.match(/Name="BatonAnalytic"[^>]*License="([^"]*)"/);
+  const batonAnalyticLicense = batonAnalyticMatch ? batonAnalyticMatch[1] : null;
+
+  console.log('[Background] BatonAnalytic license status:', batonAnalyticLicense);
+
+  if (batonAnalyticLicense === 'Valid') {
+    console.log('[Background] ✅ LICENSE VERIFIED AS ACTIVE!');
+    console.log('[Background] License="Valid" found in camera response');
+  } else {
+    console.error('[Background] ❌ LICENSE NOT ACTIVE ON CAMERA');
+    console.error('[Background] Expected: License="Valid"');
+    console.error('[Background] Found: License="' + batonAnalyticLicense + '"');
+    throw new Error('License upload accepted but license is NOT active on camera. Check camera web interface for details.');
+  }
+
+  // CRITICAL: Now start the application after license activation (Electron lines 1636-1659)
+  console.log('[Background] Starting BatonAnalytic application after license activation...');
+  await ensureAcapRunning(cameraIp, credentials);
+
+  console.log('[Background] ========================================');
+  console.log('[Background] ✅ LICENSE ACTIVATION COMPLETE');
+  console.log('[Background] Application is running and licensed');
+  console.log('[Background] ========================================');
 }
 
 /**
