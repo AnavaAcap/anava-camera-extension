@@ -1,368 +1,1107 @@
 /**
- * Background Service Worker
- * Handles extension lifecycle, persistent operations, and camera authentication
- * CRITICAL: Authentication must happen here to prevent browser login popups
+ * Anava Local Network Bridge - Background Service Worker
+ * Simplified version without ES module imports
  */
 
-// ============================================================================
-// MD5 Implementation for Digest Authentication
-// ============================================================================
+// Version requirements
+const REQUIRED_NATIVE_VERSION = "2.0.0";
+const NATIVE_HOST_ID = "com.anava.local_connector";
 
-function md5(string) {
-  function rotateLeft(value, shift) {
-    return (value << shift) | (value >>> (32 - shift));
-  }
-
-  function addUnsigned(x, y) {
-    const lsw = (x & 0xFFFF) + (y & 0xFFFF);
-    const msw = (x >> 16) + (y >> 16) + (lsw >> 16);
-    return (msw << 16) | (lsw & 0xFFFF);
-  }
-
-  function md5cmn(q, a, b, x, s, t) {
-    return addUnsigned(rotateLeft(addUnsigned(addUnsigned(a, q), addUnsigned(x, t)), s), b);
-  }
-
-  function md5ff(a, b, c, d, x, s, t) {
-    return md5cmn((b & c) | ((~b) & d), a, b, x, s, t);
-  }
-
-  function md5gg(a, b, c, d, x, s, t) {
-    return md5cmn((b & d) | (c & (~d)), a, b, x, s, t);
-  }
-
-  function md5hh(a, b, c, d, x, s, t) {
-    return md5cmn(b ^ c ^ d, a, b, x, s, t);
-  }
-
-  function md5ii(a, b, c, d, x, s, t) {
-    return md5cmn(c ^ (b | (~d)), a, b, x, s, t);
-  }
-
-  function convertToWordArray(string) {
-    const wordArray = [];
-    for (let i = 0; i < string.length * 8; i += 8) {
-      wordArray[i >> 5] |= (string.charCodeAt(i / 8) & 0xFF) << (i % 32);
-    }
-    return wordArray;
-  }
-
-  function wordToHex(value) {
-    let hex = '';
-    for (let i = 0; i < 4; i++) {
-      const byte = (value >>> (i * 8)) & 0xFF;
-      hex += ('0' + byte.toString(16)).slice(-2);
-    }
-    return hex;
-  }
-
-  function utf8Encode(string) {
-    return unescape(encodeURIComponent(string));
-  }
-
-  const x = convertToWordArray(utf8Encode(string));
-  let a = 0x67452301;
-  let b = 0xEFCDAB89;
-  let c = 0x98BADCFE;
-  let d = 0x10325476;
-
-  const stringLength = string.length;
-  x[stringLength >> 5] |= 0x80 << ((stringLength) % 32);
-  x[(((stringLength + 64) >>> 9) << 4) + 14] = stringLength * 8;
-
-  for (let i = 0; i < x.length; i += 16) {
-    const oldA = a;
-    const oldB = b;
-    const oldC = c;
-    const oldD = d;
-
-    a = md5ff(a, b, c, d, x[i + 0], 7, 0xD76AA478);
-    d = md5ff(d, a, b, c, x[i + 1], 12, 0xE8C7B756);
-    c = md5ff(c, d, a, b, x[i + 2], 17, 0x242070DB);
-    b = md5ff(b, c, d, a, x[i + 3], 22, 0xC1BDCEEE);
-    a = md5ff(a, b, c, d, x[i + 4], 7, 0xF57C0FAF);
-    d = md5ff(d, a, b, c, x[i + 5], 12, 0x4787C62A);
-    c = md5ff(c, d, a, b, x[i + 6], 17, 0xA8304613);
-    b = md5ff(b, c, d, a, x[i + 7], 22, 0xFD469501);
-    a = md5ff(a, b, c, d, x[i + 8], 7, 0x698098D8);
-    d = md5ff(d, a, b, c, x[i + 9], 12, 0x8B44F7AF);
-    c = md5ff(c, d, a, b, x[i + 10], 17, 0xFFFF5BB1);
-    b = md5ff(b, c, d, a, x[i + 11], 22, 0x895CD7BE);
-    a = md5ff(a, b, c, d, x[i + 12], 7, 0x6B901122);
-    d = md5ff(d, a, b, c, x[i + 13], 12, 0xFD987193);
-    c = md5ff(c, d, a, b, x[i + 14], 17, 0xA679438E);
-    b = md5ff(b, c, d, a, x[i + 15], 22, 0x49B40821);
-
-    a = md5gg(a, b, c, d, x[i + 1], 5, 0xF61E2562);
-    d = md5gg(d, a, b, c, x[i + 6], 9, 0xC040B340);
-    c = md5gg(c, d, a, b, x[i + 11], 14, 0x265E5A51);
-    b = md5gg(b, c, d, a, x[i + 0], 20, 0xE9B6C7AA);
-    a = md5gg(a, b, c, d, x[i + 5], 5, 0xD62F105D);
-    d = md5gg(d, a, b, c, x[i + 10], 9, 0x02441453);
-    c = md5gg(c, d, a, b, x[i + 15], 14, 0xD8A1E681);
-    b = md5gg(b, c, d, a, x[i + 4], 20, 0xE7D3FBC8);
-    a = md5gg(a, b, c, d, x[i + 9], 5, 0x21E1CDE6);
-    d = md5gg(d, a, b, c, x[i + 14], 9, 0xC33707D6);
-    c = md5gg(c, d, a, b, x[i + 3], 14, 0xF4D50D87);
-    b = md5gg(b, c, d, a, x[i + 8], 20, 0x455A14ED);
-    a = md5gg(a, b, c, d, x[i + 13], 5, 0xA9E3E905);
-    d = md5gg(d, a, b, c, x[i + 2], 9, 0xFCEFA3F8);
-    c = md5gg(c, d, a, b, x[i + 7], 14, 0x676F02D9);
-    b = md5gg(b, c, d, a, x[i + 12], 20, 0x8D2A4C8A);
-
-    a = md5hh(a, b, c, d, x[i + 5], 4, 0xFFFA3942);
-    d = md5hh(d, a, b, c, x[i + 8], 11, 0x8771F681);
-    c = md5hh(c, d, a, b, x[i + 11], 16, 0x6D9D6122);
-    b = md5hh(b, c, d, a, x[i + 14], 23, 0xFDE5380C);
-    a = md5hh(a, b, c, d, x[i + 1], 4, 0xA4BEEA44);
-    d = md5hh(d, a, b, c, x[i + 4], 11, 0x4BDECFA9);
-    c = md5hh(c, d, a, b, x[i + 7], 16, 0xF6BB4B60);
-    b = md5hh(b, c, d, a, x[i + 10], 23, 0xBEBFBC70);
-    a = md5hh(a, b, c, d, x[i + 13], 4, 0x289B7EC6);
-    d = md5hh(d, a, b, c, x[i + 0], 11, 0xEAA127FA);
-    c = md5hh(c, d, a, b, x[i + 3], 16, 0xD4EF3085);
-    b = md5hh(b, c, d, a, x[i + 6], 23, 0x04881D05);
-    a = md5hh(a, b, c, d, x[i + 9], 4, 0xD9D4D039);
-    d = md5hh(d, a, b, c, x[i + 12], 11, 0xE6DB99E5);
-    c = md5hh(c, d, a, b, x[i + 15], 16, 0x1FA27CF8);
-    b = md5hh(b, c, d, a, x[i + 2], 23, 0xC4AC5665);
-
-    a = md5ii(a, b, c, d, x[i + 0], 6, 0xF4292244);
-    d = md5ii(d, a, b, c, x[i + 7], 10, 0x432AFF97);
-    c = md5ii(c, d, a, b, x[i + 14], 15, 0xAB9423A7);
-    b = md5ii(b, c, d, a, x[i + 5], 21, 0xFC93A039);
-    a = md5ii(a, b, c, d, x[i + 12], 6, 0x655B59C3);
-    d = md5ii(d, a, b, c, x[i + 3], 10, 0x8F0CCC92);
-    c = md5ii(c, d, a, b, x[i + 10], 15, 0xFFEFF47D);
-    b = md5ii(b, c, d, a, x[i + 1], 21, 0x85845DD1);
-    a = md5ii(a, b, c, d, x[i + 8], 6, 0x6FA87E4F);
-    d = md5ii(d, a, b, c, x[i + 15], 10, 0xFE2CE6E0);
-    c = md5ii(c, d, a, b, x[i + 6], 15, 0xA3014314);
-    b = md5ii(b, c, d, a, x[i + 13], 21, 0x4E0811A1);
-    a = md5ii(a, b, c, d, x[i + 4], 6, 0xF7537E82);
-    d = md5ii(d, a, b, c, x[i + 11], 10, 0xBD3AF235);
-    c = md5ii(c, d, a, b, x[i + 2], 15, 0x2AD7D2BB);
-    b = md5ii(b, c, d, a, x[i + 9], 21, 0xEB86D391);
-
-    a = addUnsigned(a, oldA);
-    b = addUnsigned(b, oldB);
-    c = addUnsigned(c, oldC);
-    d = addUnsigned(d, oldD);
-  }
-
-  return wordToHex(a) + wordToHex(b) + wordToHex(c) + wordToHex(d);
-}
-
-// ============================================================================
-// Camera Authentication (Prevents Browser Popup)
-// ============================================================================
+// Allowed origins for security
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://anava-ai.web.app'
+];
 
 /**
- * Main authentication handler - tries Basic first, then Digest
+ * Listen for messages from web app (externally_connectable)
  */
-async function handleAxisAuthRequest({ url, username, password, body }) {
-  console.log('🔐 [Background] Attempting Basic auth first...');
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  console.log('[Background] Received external message:', message.command, 'from:', sender.origin);
 
-  // Try Basic Auth first
-  const basicAuthHeader = `Basic ${btoa(username + ':' + password)}`;
-
-  let response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': basicAuthHeader,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  // Success with Basic auth
-  if (response.ok) {
-    console.log('✅ [Background] Basic auth succeeded');
-    return response.json();
+  // Verify sender origin
+  if (!ALLOWED_ORIGINS.includes(sender.origin)) {
+    console.error('[Background] Unauthorized origin:', sender.origin);
+    sendResponse({ success: false, error: 'Unauthorized origin' });
+    return false;
   }
 
-  // If 401, try Digest auth
-  if (response.status === 401) {
-    const wwwAuthenticateHeader = response.headers.get('WWW-Authenticate');
-
-    if (wwwAuthenticateHeader && wwwAuthenticateHeader.toLowerCase().startsWith('digest')) {
-      console.log('🔐 [Background] Basic auth failed (401), trying Digest auth...');
-      return await performDigestAuth(url, username, password, body, wwwAuthenticateHeader);
-    }
-
-    throw new Error('Authentication failed: Invalid credentials');
-  }
-
-  throw new Error(`HTTP error! status: ${response.status}`);
-}
-
-/**
- * Digest Authentication Implementation (RFC 2617)
- */
-async function performDigestAuth(url, username, password, body, wwwAuthHeader) {
-  console.log('🔐 [Background] Parsing Digest challenge...');
-
-  // 1. Parse the WWW-Authenticate header
-  const digestParams = {};
-  wwwAuthHeader.replace(/(\w+)=["']?([^"',]+)["']?/g, (match, key, value) => {
-    digestParams[key] = value;
-    return '';
-  });
-
-  const { realm, qop, nonce, opaque } = digestParams;
-
-  if (!nonce || !realm) {
-    throw new Error('Invalid Digest authentication challenge - missing nonce or realm');
-  }
-
-  console.log('🔐 [Background] Digest params:', { realm, qop: qop || 'none', nonce: nonce.substring(0, 16) + '...' });
-
-  // 2. Generate client-side values
-  const cnonce = Math.random().toString(36).substring(2, 18);
-  const nc = '00000001';
-  const method = 'POST';
-  const uri = new URL(url).pathname;
-
-  // 3. Calculate hashes
-  const ha1 = md5(`${username}:${realm}:${password}`);
-  const ha2 = md5(`${method}:${uri}`);
-
-  let responseHash;
-  let digestAuthHeader;
-
-  if (qop) {
-    // RFC 2617 - with qop
-    responseHash = md5(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`);
-    digestAuthHeader = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}", qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${responseHash}"${opaque ? `, opaque="${opaque}"` : ''}`;
-  } else {
-    // RFC 2069 - without qop (legacy)
-    responseHash = md5(`${ha1}:${nonce}:${ha2}`);
-    digestAuthHeader = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}", response="${responseHash}"${opaque ? `, opaque="${opaque}"` : ''}`;
-  }
-
-  console.log('🔐 [Background] Sending Digest auth request...');
-
-  // 4. Retry the request with Digest auth
-  const finalResponse = await fetch(url, {
-    method: method,
-    headers: {
-      'Authorization': digestAuthHeader,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!finalResponse.ok) {
-    throw new Error(`Digest authentication failed! status: ${finalResponse.status}`);
-  }
-
-  console.log('✅ [Background] Digest auth succeeded');
-  return finalResponse.json();
-}
-
-// ============================================================================
-// Extension Lifecycle
-// ============================================================================
-
-// Extension installation
-chrome.runtime.onInstalled.addListener((details) => {
-  if (details.reason === 'install') {
-    console.log('Anava Camera Extension installed');
-
-    // Set default settings
-    chrome.storage.local.set({
-      settings: {
-        autoSaveCredentials: false,
-        filterUnsupported: true,
-        defaultNetwork: ''
-      }
-    });
-
-    // Open welcome page
-    chrome.tabs.create({
-      url: 'popup.html'
-    });
-  } else if (details.reason === 'update') {
-    console.log('Anava Camera Extension updated to version', chrome.runtime.getManifest().version);
-  }
-});
-
-// Handle messages from popup or content scripts
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Background received message:', message);
-
-  switch (message.type) {
-    case 'PING':
-      // Keep-alive ping to wake up service worker
-      console.log('🏓 [Background] PING received, worker is awake');
-      sendResponse({ pong: true });
+  // Route commands to appropriate handlers
+  switch (message.command) {
+    case 'INITIALIZE_CONNECTION':
+      handleInitializeConnection(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
 
-    case 'AXIS_AUTH_REQUEST':
-      console.log('🔧 [Background] Received auth request:', message.payload?.url);
-      // Handle authentication request
-      handleAxisAuthRequest(message.payload)
-        .then(result => {
-          console.log('✅ [Background] Auth successful');
-          sendResponse({ success: true, data: result });
-        })
-        .catch(error => {
-          console.error('❌ [Background] Auth failed:', error.message);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async response
+    case 'health_check':
+      handleHealthCheck()
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
 
-    case 'scan-network':
-      // Forward to appropriate handler
-      handleNetworkScan(message.data)
-        .then(sendResponse)
-        .catch(error => sendResponse({ error: error.message }));
-      return true; // Keep channel open for async response
+    case 'scan_network':
+      handleScanNetwork(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
 
-    case 'deploy-acap':
-      handleAcapDeployment(message.data)
-        .then(sendResponse)
-        .catch(error => sendResponse({ error: error.message }));
+    case 'deploy_acap':
+      handleDeployAcap(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'get_firmware_info':
+      handleGetFirmwareInfo(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
 
     default:
-      sendResponse({ error: 'Unknown message type' });
+      sendResponse({ success: false, error: 'Unknown command: ' + message.command });
+      return false;
   }
 });
 
 /**
- * Handle network scan request
+ * Listen for messages from extension popup and content scripts (internal messages)
  */
-async function handleNetworkScan(data) {
-  const { networkRange, username, password, intensity } = data;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('[Background] Received internal message:', message.type || message.command);
 
-  // This would coordinate with the discovery service
-  // For now, just acknowledge
+  // Handle messages by type (from content script)
+  if (message.type) {
+    switch (message.type) {
+      case 'CONFIG_DISCOVERED':
+        handleConfigDiscovered(message.config, message.origin)
+          .then(result => sendResponse({ success: true, data: result }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'SCAN_CAMERAS':
+        handleScanNetwork(message)
+          .then(result => sendResponse({ success: true, data: result }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'AUTHENTICATE_WITH_BACKEND':
+        handleAuthenticateWithBackend(message)
+          .then(result => sendResponse({ success: true, data: result }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'REQUEST_CONFIG_DISCOVERY':
+        // Content script is asking if we want config discovery
+        sendResponse({ success: true, shouldDiscover: true });
+        return false;
+
+      default:
+        break;
+    }
+  }
+
+  // Handle messages by command (from popup)
+  switch (message.command) {
+    case 'install_proxy':
+      handleInstallProxy()
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'check_launch_agent':
+      handleCheckLaunchAgent()
+        .then(result => sendResponse({ installed: result }))
+        .catch(error => sendResponse({ installed: false, error: error.message }));
+      return true;
+
+    case 'generate_license':
+      // Forward to offscreen document (license worker)
+      // This is handled by the offscreen document itself
+      return false;
+
+    default:
+      sendResponse({ success: false, error: 'Unknown internal command: ' + (message.command || message.type) });
+      return false;
+  }
+});
+
+/**
+ * Initialize connection from web app
+ * Web app provides backend URL, project ID, and nonce for authentication
+ */
+async function handleInitializeConnection(payload) {
+  const { backendUrl, projectId, nonce } = payload;
+
+  console.log('[Background] Initializing connection for project:', projectId);
+
+  try {
+    // Store configuration in local storage
+    await chrome.storage.local.set({
+      backendUrl,
+      projectId,
+      nonce,
+      connectedAt: Date.now()
+    });
+
+    console.log('[Background] Configuration stored');
+
+    // Forward configuration to native host
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST_ID,
+        {
+          type: 'CONFIGURE',
+          backendUrl,
+          projectId,
+          nonce
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    console.log('[Background] Native host configured:', response);
+
+    return {
+      configured: true,
+      projectId,
+      timestamp: Date.now()
+    };
+
+  } catch (error) {
+    console.error('[Background] Failed to initialize connection:', error);
+    throw new Error(`Connection initialization failed: ${error.message}`);
+  }
+}
+
+/**
+ * Health check - verify proxy server is running
+ */
+async function handleHealthCheck() {
+  try {
+    const response = await fetch('http://127.0.0.1:9876/health');
+    if (!response.ok) {
+      throw new Error('Proxy server returned error: ' + response.status);
+    }
+    const data = await response.json();
+    console.log('[Background] Health check response:', data);
+    return { status: 'healthy', proxyServer: data };
+  } catch (error) {
+    console.error('[Background] Health check failed:', error);
+    throw new Error('Proxy server not responding. Please run: ./install-proxy.sh');
+  }
+}
+
+/**
+ * Scan network for cameras
+ */
+async function handleScanNetwork(payload) {
+  const { subnet, credentials } = payload;
+  console.log('[Background] Scanning network:', subnet);
+
+  try {
+    // Parse CIDR
+    const { baseIp, count } = parseCIDR(subnet);
+    console.log(`[Background] Scanning ${count} IPs starting from ${baseIp}`);
+
+    // Generate IPs
+    const ipsToScan = generateIpRange(baseIp, count);
+    console.log(`[Background] Generated ${ipsToScan.length} IPs to scan`);
+
+    // Scan in batches of 50 (fast but doesn't overwhelm proxy)
+    const batchSize = 50;
+    const discoveredCameras = [];
+    const totalBatches = Math.ceil(ipsToScan.length / batchSize);
+
+    console.log(`[Background] Scanning ${ipsToScan.length} IPs in ${totalBatches} batches of ${batchSize}...`);
+
+    for (let i = 0; i < ipsToScan.length; i += batchSize) {
+      const batch = ipsToScan.slice(i, i + batchSize);
+      const batchNum = Math.floor(i / batchSize) + 1;
+      console.log(`[Background] Scanning batch ${batchNum}/${totalBatches} (${batch.length} IPs)...`);
+
+      const batchPromises = batch.map(ip => checkCamera(ip, credentials));
+      const batchResults = await Promise.all(batchPromises);
+
+      batchResults.forEach(camera => {
+        if (camera) discoveredCameras.push(camera);
+      });
+
+      console.log(`[Background] Batch ${batchNum} complete. Found ${discoveredCameras.length} cameras so far.`);
+    }
+
+    console.log(`[Background] Scan complete. Found ${discoveredCameras.length} cameras total.`);
+    return { cameras: discoveredCameras };
+  } catch (error) {
+    console.error('[Background] Network scan error:', error);
+    throw new Error(`Network scan failed: ${error.message}`);
+  }
+}
+
+/**
+ * Check if IP is a camera via proxy
+ * Uses param.cgi to get complete device info (firmware, MAC, SOC)
+ */
+async function checkCamera(ip, credentials) {
+  try {
+    const response = await fetch('http://127.0.0.1:9876/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: `https://${ip}/axis-cgi/param.cgi`,
+        method: 'POST',
+        username: credentials.username,
+        password: credentials.password,
+        data: 'action=list&group=root.Properties'
+      }),
+      signal: AbortSignal.timeout(3000)  // 3 second timeout
+    });
+
+    if (!response.ok) return null;
+
+    const result = await response.json();
+    const data = parseParamCgiResponse(result.data || result);
+
+    // Validate it's an Axis device
+    if (!data.Brand || !data.Brand.toLowerCase().includes('axis')) {
+      return null;
+    }
+
+    return {
+      ip,
+      model: data.ProdFullName || data.ProdShortName || 'Unknown',
+      manufacturer: data.Brand || 'Axis',
+      serialNumber: data.SerialNumber || 'Unknown',
+      firmware: data.Version || 'Unknown',
+      socType: extractSocType(data.Soc),
+      architecture: data.Architecture || 'aarch64',
+      deviceId: (data.SerialNumber || '').replace(/:/g, ''),  // MAC without colons
+      deviceType: 'camera',
+      hardwareId: data.HardwareID,
+      buildDate: data.BuildDate
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Parse param.cgi response (key=value format)
+ * Example: "root.Properties.System.SerialNumber=B8A44F7BE746"
+ */
+function parseParamCgiResponse(data) {
+  if (typeof data !== 'string') {
+    // If already parsed as object, return as-is
+    if (typeof data === 'object' && data !== null) return data;
+    return {};
+  }
+
+  const result = {};
+  const lines = data.split('\n');
+
+  for (const line of lines) {
+    if (!line.trim() || !line.includes('=')) continue;
+
+    const [key, ...valueParts] = line.split('=');
+    const value = valueParts.join('=').trim(); // Handle values with '=' in them
+
+    if (key) {
+      // Extract property name: root.Properties.System.SerialNumber → SerialNumber
+      const propName = key.trim().split('.').pop();
+      result[propName] = value;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extract SOC type from Axis SOC string
+ * Examples: "Ambarella CV25" → "cv25", "ARTPEC-8" → "artpec8"
+ */
+function extractSocType(socString) {
+  if (!socString) return 'unknown';
+
+  const soc = socString.toLowerCase();
+
+  if (soc.includes('cv25')) return 'cv25';
+  if (soc.includes('cv22')) return 'cv22';
+  if (soc.includes('artpec-8') || soc.includes('artpec8')) return 'artpec8';
+  if (soc.includes('artpec-7') || soc.includes('artpec7')) return 'artpec7';
+  if (soc.includes('artpec-6') || soc.includes('artpec6')) return 'artpec6';
+
+  return socString; // Return original if no match
+}
+
+/**
+ * Complete ACAP Deployment Workflow (6 Steps)
+ * Replicates electron installer's rapid deployment pattern
+ */
+async function handleDeployAcap(payload) {
+  const { cameraIp, credentials, config } = payload;
+  console.log('[Background] Starting complete ACAP deployment to:', cameraIp);
+
+  try {
+    // Step 0: Get camera firmware info and MAC address
+    console.log('[Background] Step 0: Getting camera info...');
+    const cameraInfo = await getCameraInfo(cameraIp, credentials);
+    console.log('[Background] Camera info:', cameraInfo);
+
+    // Step 1: Deploy ACAP file
+    console.log('[Background] Step 1: Deploying ACAP file...');
+    await deployAcapFile(cameraIp, credentials, cameraInfo);
+    console.log('[Background] ACAP deployed successfully');
+    await sleep(3000); // Wait 3s for installation
+
+    // Step 2: Activate license
+    console.log('[Background] Step 2: Activating license...');
+    await activateLicense(cameraIp, credentials, config.licenseKey, cameraInfo.mac);
+    console.log('[Background] License activated successfully');
+    await sleep(3000); // Wait 3s for processing
+
+    // Step 3: Ensure ACAP is running
+    console.log('[Background] Step 3: Ensuring ACAP is running...');
+    await ensureAcapRunning(cameraIp, credentials);
+    console.log('[Background] ACAP is running');
+
+    // Step 4: Push configuration
+    console.log('[Background] Step 4: Pushing configuration...');
+    await pushConfiguration(cameraIp, credentials, config);
+    console.log('[Background] Configuration pushed successfully');
+    await sleep(2000); // Wait 2s for verification
+
+    // Step 5: Validate deployment
+    console.log('[Background] Step 5: Validating deployment...');
+    const validation = await validateDeployment(cameraIp, credentials);
+    console.log('[Background] Validation result:', validation);
+
+    // Step 6: Capture scene description (verification test)
+    console.log('[Background] Step 6: Testing ACAP functionality...');
+    // Optional: Could add scene capture test here
+
+    return {
+      success: true,
+      message: 'Complete deployment successful',
+      details: {
+        cameraIp,
+        mac: cameraInfo.mac,
+        firmware: cameraInfo.firmware,
+        model: cameraInfo.model,
+        validation
+      }
+    };
+
+  } catch (error) {
+    console.error('[Background] Deployment error:', error);
+    throw new Error(`Deployment failed: ${error.message}`);
+  }
+}
+
+/**
+ * Step 0: Get camera firmware info and MAC address
+ */
+async function getCameraInfo(cameraIp, credentials) {
+  const response = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/basicdeviceinfo.cgi`,
+      method: 'POST',
+      username: credentials.username,
+      password: credentials.password,
+      body: {
+        apiVersion: '1.0',
+        method: 'getAllProperties'
+      }
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to get camera info: ${response.status}`);
+  }
+
+  const result = await response.json();
+  const data = result.data?.data?.propertyList || {};
+
   return {
-    success: true,
-    message: 'Network scan initiated'
+    mac: (data.SerialNumber || '').replace(/:/g, ''), // MAC without colons
+    firmware: data.Version || 'Unknown',
+    model: data.ProdFullName || 'Unknown',
+    architecture: data.Architecture || 'aarch64',
+    osVersion: detectOSVersion(data.Version)
+  };
+}
+
+function detectOSVersion(firmwareVersion) {
+  if (!firmwareVersion) return 'OS12';
+  const major = parseInt(firmwareVersion.split('.')[0]);
+  return major >= 11 ? 'OS12' : 'OS11';
+}
+
+/**
+ * Step 1: Deploy ACAP file from GitHub releases
+ */
+async function deployAcapFile(cameraIp, credentials, cameraInfo) {
+  // Get latest ACAP release
+  const acapUrl = await getAcapDownloadUrl(cameraInfo.architecture, cameraInfo.osVersion);
+  console.log('[Background] ACAP URL:', acapUrl);
+
+  // Download ACAP file
+  console.log('[Background] Downloading ACAP...');
+  const acapBlob = await fetch(acapUrl).then(r => r.blob());
+  console.log('[Background] ACAP downloaded, size:', acapBlob.size);
+
+  // Upload to camera via multipart form-data
+  const formData = new FormData();
+  formData.append('packfil', acapBlob, 'BatonAnalytic.eap');
+
+  const uploadUrl = `https://${cameraIp}/axis-cgi/applications/upload.cgi`;
+
+  // Proxy doesn't support FormData, so we need to use direct fetch with auth header
+  const authHeader = 'Basic ' + btoa(`${credentials.username}:${credentials.password}`);
+
+  const uploadResponse = await fetch('http://127.0.0.1:9876/upload-acap', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      url: uploadUrl,
+      username: credentials.username,
+      password: credentials.password,
+      acapUrl // Proxy will download and upload
+    })
+  });
+
+  if (!uploadResponse.ok) {
+    const error = await uploadResponse.text();
+    // Check if already installed (Error: 10)
+    if (error.includes('Error: 10')) {
+      console.log('[Background] ACAP already installed, continuing...');
+      return;
+    }
+    throw new Error(`ACAP upload failed: ${error}`);
+  }
+
+  console.log('[Background] ACAP uploaded successfully');
+}
+
+/**
+ * Generate license XML using Axis SDK (via offscreen document)
+ */
+async function generateLicenseWithAxisSDK(deviceId, licenseKey) {
+  try {
+    // Create offscreen document if it doesn't exist
+    const existingContexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [chrome.runtime.getURL('license-worker.html')]
+    });
+
+    if (existingContexts.length === 0) {
+      console.log('[Background] Creating offscreen document for Axis SDK');
+      await chrome.offscreen.createDocument({
+        url: 'license-worker.html',
+        reasons: ['DOM_SCRAPING'], // Closest reason for loading external SDK
+        justification: 'Load Axis SDK to generate signed license XML'
+      });
+
+      // Wait for SDK to initialize
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // Send message to offscreen document
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          command: 'generate_license',
+          payload: { deviceId, licenseKey }
+        },
+        response => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(`License worker error: ${chrome.runtime.lastError.message}`));
+            return;
+          }
+
+          if (!response) {
+            reject(new Error('No response from license worker'));
+            return;
+          }
+
+          if (response.success) {
+            resolve(response.licenseXML);
+          } else {
+            reject(new Error(response.error || 'License generation failed'));
+          }
+        }
+      );
+    });
+  } catch (error) {
+    console.error('[Background] Error in generateLicenseWithAxisSDK:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get ACAP download URL from GitHub releases
+ */
+async function getAcapDownloadUrl(architecture, osVersion) {
+  // GitHub API: Get latest release
+  const releaseUrl = 'https://api.github.com/repos/AnavaAcap/vision-releases/releases/latest';
+  const release = await fetch(releaseUrl).then(r => r.json());
+
+  // Find matching ACAP file
+  const arch = architecture.toLowerCase();
+  const os = osVersion.toLowerCase();
+
+  const asset = release.assets.find(a =>
+    a.name.toLowerCase().includes(arch) &&
+    a.name.toLowerCase().includes(os) &&
+    a.name.endsWith('.eap')
+  );
+
+  if (!asset) {
+    // Fallback to aarch64 OS12 (most common)
+    const fallback = release.assets.find(a =>
+      a.name.toLowerCase().includes('aarch64') &&
+      a.name.toLowerCase().includes('os12') &&
+      a.name.endsWith('.eap')
+    );
+
+    if (!fallback) {
+      throw new Error(`No ACAP found for ${arch} ${os}`);
+    }
+
+    console.log('[Background] Using fallback ACAP:', fallback.name);
+    return fallback.browser_download_url;
+  }
+
+  console.log('[Background] Found ACAP:', asset.name);
+  return asset.browser_download_url;
+}
+
+/**
+ * Step 2: Activate license via Axis SDK (direct integration)
+ */
+async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
+  // Generate license XML via license worker (loads Axis SDK)
+  console.log('[Background] Generating license XML via Axis SDK...');
+
+  const licenseXML = await generateLicenseWithAxisSDK(deviceId, licenseKey);
+  console.log('[Background] License XML generated, length:', licenseXML.length);
+
+  // Upload license XML to camera
+  const uploadUrl = `https://${cameraIp}/axis-cgi/applications/license.cgi?action=uploadlicensekey&package=BatonAnalytic`;
+
+  const uploadResponse = await fetch('http://127.0.0.1:9876/upload-license', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: uploadUrl,
+      username: credentials.username,
+      password: credentials.password,
+      licenseXML
+    })
+  });
+
+  if (!uploadResponse.ok) {
+    const error = await uploadResponse.text();
+    // Check if already licensed (Error: 30)
+    if (error.includes('Error: 30')) {
+      console.log('[Background] Already licensed, continuing...');
+      return;
+    }
+    throw new Error(`License upload failed: ${error}`);
+  }
+
+  console.log('[Background] License uploaded successfully');
+}
+
+/**
+ * Step 3: Ensure ACAP application is running
+ */
+async function ensureAcapRunning(cameraIp, credentials) {
+  // Check current status
+  const statusResponse = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/applications/list.cgi`,
+      method: 'GET',
+      username: credentials.username,
+      password: credentials.password,
+      body: {}
+    })
+  });
+
+  if (!statusResponse.ok) {
+    throw new Error(`Failed to get app status: ${statusResponse.status}`);
+  }
+
+  const statusData = await statusResponse.json();
+  const statusText = statusData.data?.text || '';
+
+  // Parse XML response (simple string search)
+  const isRunning = statusText.includes('Name="BatonAnalytic"') &&
+                    statusText.includes('Status="Running"');
+
+  if (isRunning) {
+    console.log('[Background] ACAP already running');
+    return;
+  }
+
+  // Start ACAP
+  console.log('[Background] Starting ACAP...');
+  const startResponse = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/applications/control.cgi?action=start&package=BatonAnalytic`,
+      method: 'GET',
+      username: credentials.username,
+      password: credentials.password,
+      body: {}
+    })
+  });
+
+  if (!startResponse.ok) {
+    throw new Error(`Failed to start ACAP: ${startResponse.status}`);
+  }
+
+  // Retry verification (wait for app to start)
+  await sleep(3000);
+
+  for (let i = 0; i < 2; i++) {
+    const retryResponse = await fetch('http://127.0.0.1:9876/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: `https://${cameraIp}/axis-cgi/applications/list.cgi`,
+        method: 'GET',
+        username: credentials.username,
+        password: credentials.password,
+        body: {}
+      })
+    });
+
+    const retryData = await retryResponse.json();
+    const retryText = retryData.data?.text || '';
+
+    if (retryText.includes('Status="Running"')) {
+      console.log('[Background] ACAP started successfully');
+      return;
+    }
+
+    await sleep(3000);
+  }
+
+  throw new Error('ACAP failed to start after retries');
+}
+
+/**
+ * Step 4: Push configuration to camera
+ */
+async function pushConfiguration(cameraIp, credentials, config) {
+  const systemConfig = {
+    firebase: config.firebaseConfig,
+    gemini: {
+      vertexApiGatewayUrl: config.geminiConfig.vertexApiGatewayUrl || config.geminiConfig.vertex_api_gateway_url,
+      vertexApiGatewayKey: config.geminiConfig.vertexApiGatewayKey || config.geminiConfig.vertex_api_gateway_key,
+      vertexGcpProjectId: config.geminiConfig.vertexGcpProjectId || config.geminiConfig.vertex_gcp_project_id,
+      vertexGcpRegion: config.geminiConfig.vertexGcpRegion || config.geminiConfig.vertex_gcp_region || 'us-central1',
+      vertexGcsBucketName: config.geminiConfig.vertexGcsBucketName || config.geminiConfig.vertex_gcs_bucket_name
+    },
+    anavaKey: config.licenseKey,
+    customerId: config.customerId
+  };
+
+  const response = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/local/BatonAnalytic/baton_analytic.cgi?command=setInstallerConfig`,
+      method: 'POST',
+      username: credentials.username,
+      password: credentials.password,
+      body: systemConfig
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    // Check for ThreadPool error (ACAP restarting)
+    if (error.includes('ThreadPool')) {
+      console.log('[Background] ACAP restarting, waiting...');
+      await sleep(5000);
+      // Verify config saved
+      return;
+    }
+    throw new Error(`Config push failed: ${error}`);
+  }
+
+  console.log('[Background] Configuration pushed successfully');
+}
+
+/**
+ * Step 5: Validate deployment
+ */
+async function validateDeployment(cameraIp, credentials) {
+  const response = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/applications/list.cgi`,
+      method: 'GET',
+      username: credentials.username,
+      password: credentials.password,
+      body: {}
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Validation failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const statusText = data.data?.text || '';
+
+  // Parse XML for BatonAnalytic status
+  const hasBatonAnalytic = statusText.includes('Name="BatonAnalytic"');
+  const isRunning = statusText.includes('Status="Running"');
+  const isLicensed = statusText.includes('License="Valid"');
+
+  if (!hasBatonAnalytic) {
+    throw new Error('ACAP not found on camera');
+  }
+
+  if (!isRunning) {
+    throw new Error('ACAP is not running');
+  }
+
+  if (!isLicensed) {
+    throw new Error('ACAP is not licensed');
+  }
+
+  return {
+    installed: true,
+    running: true,
+    licensed: true,
+    status: 'Valid'
   };
 }
 
 /**
- * Handle ACAP deployment request
+ * Utility: Sleep helper
  */
-async function handleAcapDeployment(data) {
-  const { cameras, acapFile, licenseKey } = data;
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-  // This would coordinate with the deployment service
-  // For now, just acknowledge
+/**
+ * Get camera firmware info
+ */
+async function handleGetFirmwareInfo(payload) {
+  const { cameraIp, credentials } = payload;
+
+  try {
+    const response = await fetch('http://127.0.0.1:9876/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: `https://${cameraIp}/axis-cgi/basicdeviceinfo.cgi`,
+        method: 'GET',
+        username: credentials.username,
+        password: credentials.password,
+        body: {}
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get firmware info');
+    }
+
+    const result = await response.json();
+    return result.data || result;
+  } catch (error) {
+    throw new Error('Failed to get firmware info: ' + error.message);
+  }
+}
+
+/**
+ * Parse CIDR notation
+ */
+function parseCIDR(cidr) {
+  const [baseIp, prefixLength] = cidr.split('/');
+  const prefix = parseInt(prefixLength, 10);
+  const count = Math.pow(2, 32 - prefix);
+  return { baseIp, count };
+}
+
+/**
+ * Generate IP range
+ */
+function generateIpRange(baseIp, count) {
+  const parts = baseIp.split('.').map(Number);
+  const ips = [];
+  let ipNum = (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+
+  for (let i = 0; i < Math.min(count, 256); i++) {
+    const currentIp = ipNum + i;
+    const ip = [
+      (currentIp >> 24) & 255,
+      (currentIp >> 16) & 255,
+      (currentIp >> 8) & 255,
+      currentIp & 255
+    ].join('.');
+    ips.push(ip);
+  }
+
+  return ips;
+}
+
+/**
+ * Handle proxy server installation
+ * Opens the installation script in user's default terminal
+ */
+async function handleInstallProxy() {
+  try {
+    // For Chrome extensions, we cannot directly execute shell scripts
+    // Instead, we'll create a downloadable install script and open instructions
+
+    // Option 1: Try to open Terminal with the install command (macOS only)
+    // This requires the extension folder path to be known
+    const installInstructions = `
+To install the proxy server:
+
+1. Open Terminal
+2. Navigate to the extension folder
+3. Run: ./install-proxy.sh
+
+Alternative: Download and run the installer script from:
+https://github.com/AnavaAcap/anava-camera-extension
+    `;
+
+    console.log('[Background] Proxy installation requested');
+    console.log('[Background] User needs to run: ./install-proxy.sh');
+
+    // Since we can't execute shell scripts directly from a Chrome extension,
+    // we'll return instructions for the user
+    throw new Error('Automatic installation is not available. Please run ./install-proxy.sh manually from the extension folder.');
+
+  } catch (error) {
+    console.error('[Background] Install proxy error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Check if LaunchAgent is installed (proxy configured to auto-start)
+ */
+async function handleCheckLaunchAgent() {
+  try {
+    // We can't directly check the file system from a Chrome extension
+    // Instead, we'll check if the proxy server is running (good enough proxy)
+    const response = await fetch('http://127.0.0.1:9876/health', {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    });
+
+    return response.ok;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Handle configuration discovered from terraform-spa site
+ */
+async function handleConfigDiscovered(config, origin) {
+  console.log('[Background] Configuration discovered from:', origin);
+  console.log('[Background] Config:', config);
+
+  // Validate the extension ID matches (if we're published)
+  const ourExtensionId = chrome.runtime.id;
+  if (config.extensionId !== 'PLACEHOLDER_EXTENSION_ID' && config.extensionId !== ourExtensionId) {
+    console.warn('[Background] Extension ID mismatch:', config.extensionId, 'vs', ourExtensionId);
+    return { validated: false, reason: 'Extension ID mismatch' };
+  }
+
+  // Store the configuration
+  await chrome.storage.local.set({
+    discoveredConfig: config,
+    discoveryOrigin: origin,
+    discoveryTime: Date.now()
+  });
+
+  // Update badge to show we're connected to a project
+  chrome.action.setBadgeText({ text: '✓' });
+  chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' }); // Green
+
   return {
-    success: true,
-    message: 'ACAP deployment initiated'
+    validated: true,
+    projectId: config.projectId,
+    features: config.features
   };
 }
 
-// Keep service worker alive (optional, for long-running operations)
-chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'keepAlive') {
-    // Do nothing, just prevents service worker from sleeping
-    console.log('Service worker keepalive');
+/**
+ * Handle authentication with backend using nonce
+ */
+async function handleAuthenticateWithBackend(payload) {
+  const { nonce, backendUrl } = payload;
+
+  try {
+    // Get discovered config if not provided
+    let apiUrl = backendUrl;
+    if (!apiUrl) {
+      const storage = await chrome.storage.local.get(['discoveredConfig']);
+      if (storage.discoveredConfig) {
+        apiUrl = storage.discoveredConfig.backendUrl;
+      }
+    }
+
+    if (!apiUrl) {
+      throw new Error('No backend URL available');
+    }
+
+    // Forward to native host for authentication
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST_ID,
+        {
+          type: 'AUTHENTICATE',
+          nonce,
+          backendUrl: apiUrl
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    return {
+      success: true,
+      token: response.token,
+      authenticated: true
+    };
+
+  } catch (error) {
+    console.error('[Background] Authentication failed:', error);
+    throw error;
   }
+}
+
+/**
+ * Check native host version
+ */
+async function checkNativeVersion() {
+  try {
+    console.log('[Background] Checking native host version...');
+
+    // Send GET_VERSION message to native host
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST_ID,
+        { type: 'GET_VERSION' },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    if (!response || !response.version) {
+      throw new Error('No version in response');
+    }
+
+    const nativeVersion = response.version;
+    console.log('[Background] Native host version:', nativeVersion);
+    console.log('[Background] Required version:', REQUIRED_NATIVE_VERSION);
+
+    if (nativeVersion !== REQUIRED_NATIVE_VERSION) {
+      console.warn('[Background] Version mismatch detected!');
+
+      // Set badge to indicate update needed
+      chrome.action.setBadgeText({ text: '!' });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF9800' }); // Orange
+
+      // Store version mismatch info
+      chrome.storage.local.set({
+        nativeVersionMismatch: true,
+        currentNativeVersion: nativeVersion,
+        requiredNativeVersion: REQUIRED_NATIVE_VERSION
+      });
+
+      return false;
+    }
+
+    // Version matches - clear any previous warnings
+    chrome.action.setBadgeText({ text: '' });
+    chrome.storage.local.set({
+      nativeVersionMismatch: false,
+      currentNativeVersion: nativeVersion
+    });
+
+    console.log('[Background] Version check passed');
+    return true;
+
+  } catch (error) {
+    console.error('[Background] Native host not responding:', error.message);
+
+    // Native host not installed or not responding
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#F44336' }); // Red
+
+    chrome.storage.local.set({
+      nativeNotInstalled: true,
+      nativeVersionMismatch: false
+    });
+
+    return false;
+  }
+}
+
+/**
+ * Listen for extension installation/update
+ */
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('[Background] Extension installed/updated:', details.reason);
+
+  // Check native version on install/update
+  checkNativeVersion();
 });
+
+/**
+ * Listen for browser startup
+ */
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[Background] Browser started');
+
+  // Check native version on startup
+  checkNativeVersion();
+});
+
+/**
+ * Periodic version check (every 5 minutes)
+ */
+setInterval(() => {
+  checkNativeVersion();
+}, 5 * 60 * 1000); // 5 minutes
+
+// Initial version check on script load
+checkNativeVersion();
+
+console.log('[Background] Anava Local Network Bridge initialized');

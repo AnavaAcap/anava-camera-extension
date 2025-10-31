@@ -3,7 +3,11 @@ package main
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,7 +40,124 @@ type ProxyResponse struct {
 var (
 	client *http.Client
 	logger *log.Logger
+	certStore *CertificateStore
 )
+
+// CertificateStore manages certificate fingerprints for known cameras
+type CertificateStore struct {
+	mu           sync.RWMutex
+	fingerprints map[string]string // host -> SHA256 fingerprint
+	filePath     string
+}
+
+// NewCertificateStore creates a new certificate store
+func NewCertificateStore(filePath string) *CertificateStore {
+	store := &CertificateStore{
+		fingerprints: make(map[string]string),
+		filePath:     filePath,
+	}
+	store.load()
+	return store
+}
+
+// load reads saved fingerprints from disk
+func (cs *CertificateStore) load() {
+	data, err := os.ReadFile(cs.filePath)
+	if err != nil {
+		// File doesn't exist yet - that's okay
+		return
+	}
+
+	var fingerprints map[string]string
+	if err := json.Unmarshal(data, &fingerprints); err != nil {
+		logger.Printf("Warning: Failed to load certificate store: %v", err)
+		return
+	}
+
+	cs.mu.Lock()
+	cs.fingerprints = fingerprints
+	cs.mu.Unlock()
+
+	logger.Printf("Loaded %d certificate fingerprints", len(fingerprints))
+}
+
+// save writes fingerprints to disk
+func (cs *CertificateStore) save() {
+	cs.mu.RLock()
+	data, err := json.MarshalIndent(cs.fingerprints, "", "  ")
+	cs.mu.RUnlock()
+
+	if err != nil {
+		logger.Printf("Error marshaling certificate store: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(cs.filePath, data, 0600); err != nil {
+		logger.Printf("Error saving certificate store: %v", err)
+	}
+}
+
+// GetFingerprint returns the stored fingerprint for a host
+func (cs *CertificateStore) GetFingerprint(host string) (string, bool) {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	fp, ok := cs.fingerprints[host]
+	return fp, ok
+}
+
+// SetFingerprint stores a fingerprint for a host
+func (cs *CertificateStore) SetFingerprint(host, fingerprint string) {
+	cs.mu.Lock()
+	cs.fingerprints[host] = fingerprint
+	cs.mu.Unlock()
+	cs.save()
+}
+
+// calculateCertFingerprint returns SHA256 fingerprint of certificate
+func calculateCertFingerprint(cert *x509.Certificate) string {
+	hash := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(hash[:])
+}
+
+// generateSecureNonce generates cryptographically secure random nonce
+// Returns 16 bytes (32 hex characters) of random data
+func generateSecureNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based if crypto/rand fails (unlikely)
+		logger.Printf("Warning: crypto/rand failed, using fallback nonce")
+		return fmt.Sprintf("%d%d", time.Now().UnixNano(), time.Now().Unix())
+	}
+	return hex.EncodeToString(b)
+}
+
+// sanitizeCredential redacts sensitive credential information for logging
+// Shows first and last character only, e.g., "anava" -> "a***a"
+func sanitizeCredential(credential string) string {
+	if len(credential) == 0 {
+		return "[empty]"
+	}
+	if len(credential) == 1 {
+		return "*"
+	}
+	if len(credential) == 2 {
+		return string(credential[0]) + "*"
+	}
+	// Show first and last char, mask the rest
+	masked := string(credential[0]) + strings.Repeat("*", len(credential)-2) + string(credential[len(credential)-1])
+	return masked
+}
+
+// SECURITY: Allowed origins for CORS (whitelist approach)
+// Only these origins can make requests to the proxy server
+var allowedOrigins = map[string]bool{
+	"http://localhost:5173":       true, // Local dev server
+	"http://localhost:3000":       true, // Alternative local dev
+	"https://anava-ai.web.app":    true, // Production web app
+	"http://127.0.0.1:5173":       true, // Localhost IP variant
+	"http://127.0.0.1:3000":       true, // Localhost IP variant
+	"chrome-extension://ojhdgnojgelfiejpgipjddfddgefdpfa": true, // Extension ID (from install script)
+}
 
 func init() {
 	// Setup logging
@@ -43,7 +165,8 @@ func init() {
 	os.MkdirAll(logDir, 0755)
 
 	logFile := filepath.Join(logDir, "anava-camera-proxy-server.log")
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// SECURITY: Use 0600 permissions (owner read/write only)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Fatal("Failed to open log file:", err)
 	}
@@ -51,16 +174,101 @@ func init() {
 	logger = log.New(f, "", log.LstdFlags)
 	logger.Println("=== Camera Proxy Server started ===")
 
-	// Create HTTP client for camera connections (NOT sandboxed)
-	// Note: We override timeout per-request for the unauthenticated test
+	// SECURITY: Initialize certificate store for pinning
+	certStoreDir := filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "Anava")
+	os.MkdirAll(certStoreDir, 0700)
+	certStoreFile := filepath.Join(certStoreDir, "certificate-fingerprints.json")
+	certStore = NewCertificateStore(certStoreFile)
+
+	// Create HTTP client for camera connections with certificate validation
 	client = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
+				// SECURITY: Still accept self-signed, but we'll validate fingerprints
 				InsecureSkipVerify: true,
+				// Callback to validate certificate fingerprints
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					if len(cs.PeerCertificates) == 0 {
+						return fmt.Errorf("no peer certificates")
+					}
+
+					// Get the leaf certificate (server's cert)
+					cert := cs.PeerCertificates[0]
+					host := cs.ServerName
+					currentFingerprint := calculateCertFingerprint(cert)
+
+					// Check if we've seen this host before
+					if storedFingerprint, exists := certStore.GetFingerprint(host); exists {
+						// We've seen this host - verify fingerprint matches
+						if storedFingerprint != currentFingerprint {
+							// SECURITY ALERT: Certificate changed!
+							logger.Printf("🚨 SECURITY ALERT: Certificate changed for %s", host)
+							logger.Printf("   Stored fingerprint: %s", storedFingerprint)
+							logger.Printf("   Current fingerprint: %s", currentFingerprint)
+							logger.Printf("   This could indicate a Man-in-the-Middle attack!")
+
+							// For now, we'll log but allow (to prevent breaking deployments)
+							// In production, consider returning an error here
+							// return fmt.Errorf("certificate fingerprint mismatch for %s", host)
+						} else {
+							logger.Printf("✓ Certificate validated for %s (fingerprint matches)", host)
+						}
+					} else {
+						// First time seeing this host - store fingerprint
+						logger.Printf("📌 Pinning certificate for new host: %s", host)
+						logger.Printf("   Fingerprint: %s", currentFingerprint)
+						certStore.SetFingerprint(host, currentFingerprint)
+					}
+
+					return nil
+				},
 			},
 		},
 		Timeout: 30 * time.Second,
 	}
+}
+
+// isOriginAllowed checks if the request origin is in the whitelist
+func isOriginAllowed(origin string) bool {
+	// Empty origin = same-origin or localhost direct access (allow for testing)
+	if origin == "" {
+		return true
+	}
+
+	// DEV MODE: Allow any chrome-extension:// origin for development
+	// In production, you should whitelist specific extension IDs
+	if strings.HasPrefix(origin, "chrome-extension://") {
+		logger.Printf("Allowing chrome-extension origin: %s", origin)
+		return true
+	}
+
+	return allowedOrigins[origin]
+}
+
+// setCORSHeaders sets appropriate CORS headers based on origin validation
+func setCORSHeaders(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+
+	// SECURITY: Validate origin against whitelist
+	if !isOriginAllowed(origin) {
+		logger.Printf("SECURITY: Blocked request from unauthorized origin: %s", origin)
+		http.Error(w, "Forbidden: Origin not allowed", http.StatusForbidden)
+		return false
+	}
+
+	// Set specific origin (not wildcard)
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	} else {
+		// For direct localhost access (no origin header), allow localhost
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+	}
+
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	return true
 }
 
 // tryUnauthenticatedRequest makes ONE request without auth (3 second timeout)
@@ -134,6 +342,8 @@ func main() {
 	// Start HTTP server on localhost only (Chrome can access localhost)
 	http.HandleFunc("/proxy", handleProxyRequest)
 	http.HandleFunc("/health", handleHealth)
+	http.HandleFunc("/upload-acap", handleUploadAcap)
+	http.HandleFunc("/upload-license", handleUploadLicense)
 
 	port := "9876"
 	addr := "127.0.0.1:" + port
@@ -148,16 +358,20 @@ func main() {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: Validate origin (even for health checks)
+	if !setCORSHeaders(w, r) {
+		return // setCORSHeaders already sent error response
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS for Chrome extension
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	// SECURITY: Validate origin before processing request
+	if !setCORSHeaders(w, r) {
+		return // setCORSHeaders already sent error response
+	}
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
@@ -177,7 +391,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Printf("Proxying request: %s %s (user: %s)", req.Method, req.URL, req.Username)
+	// SECURITY: Sanitize credentials in logs
+	logger.Printf("Proxying request: %s %s (user: %s)", req.Method, req.URL, sanitizeCredential(req.Username))
 	if req.Body != nil && len(req.Body) > 0 {
 		bodyJSON, _ := json.Marshal(req.Body)
 		logger.Printf("Received request body: %s", string(bodyJSON))
@@ -454,12 +669,14 @@ func calculateDigestAuth(req *ProxyRequest, challenge *DigestChallenge) string {
 	ha1 := md5Hash(fmt.Sprintf("%s:%s:%s", req.Username, challenge.Realm, req.Password))
 	ha2 := md5Hash(fmt.Sprintf("%s:%s", req.Method, uri))
 
+	// SECURITY: Generate secure random client nonce
+	cnonce := generateSecureNonce()
+	nc := "00000001" // Nonce count - could be incremented for multiple requests
+
 	var response string
 	if challenge.Qop == "" {
 		response = md5Hash(fmt.Sprintf("%s:%s:%s", ha1, challenge.Nonce, ha2))
 	} else {
-		nc := "00000001"
-		cnonce := "0a4f113b"
 		response = md5Hash(fmt.Sprintf("%s:%s:%s:%s:%s:%s", ha1, challenge.Nonce, nc, cnonce, challenge.Qop, ha2))
 	}
 
@@ -475,8 +692,6 @@ func calculateDigestAuth(req *ProxyRequest, challenge *DigestChallenge) string {
 	}
 
 	if challenge.Qop != "" {
-		nc := "00000001"
-		cnonce := "0a4f113b"
 		auth += fmt.Sprintf(`, qop=%s, nc=%s, cnonce="%s"`, challenge.Qop, nc, cnonce)
 	}
 
@@ -521,4 +736,238 @@ func parseResponse(httpResp *http.Response) (ProxyResponse, error) {
 	}
 
 	return resp, nil
+}
+
+// handleUploadAcap handles ACAP file upload from GitHub to camera
+func handleUploadAcap(w http.ResponseWriter, r *http.Request) {
+	if !setCORSHeaders(w, r) {
+		return
+	}
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		URL      string `json:"url"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		AcapURL  string `json:"acapUrl"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		logger.Printf("Failed to decode upload-acap request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	logger.Printf("Uploading ACAP from %s to %s", payload.AcapURL, payload.URL)
+
+	// Download ACAP file from GitHub
+	acapResp, err := http.Get(payload.AcapURL)
+	if err != nil {
+		logger.Printf("Failed to download ACAP: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to download ACAP: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer acapResp.Body.Close()
+
+	if acapResp.StatusCode != 200 {
+		logger.Printf("GitHub returned error: %d", acapResp.StatusCode)
+		http.Error(w, fmt.Sprintf("GitHub returned error: %d", acapResp.StatusCode), http.StatusInternalServerError)
+		return
+	}
+
+	acapBytes, err := io.ReadAll(acapResp.Body)
+	if err != nil {
+		logger.Printf("Failed to read ACAP: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to read ACAP: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	logger.Printf("Downloaded ACAP, size: %d bytes", len(acapBytes))
+
+	// Create multipart form-data
+	var buf bytes.Buffer
+	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Disposition: form-data; name=\"packfil\"; filename=\"BatonAnalytic.eap\"\r\n")
+	buf.WriteString("Content-Type: application/octet-stream\r\n")
+	buf.WriteString("\r\n")
+	buf.Write(acapBytes)
+	buf.WriteString("\r\n")
+	buf.WriteString("--" + boundary + "--\r\n")
+
+	// Upload to camera with Digest Auth
+	httpReq, err := http.NewRequest("POST", payload.URL, &buf)
+	if err != nil {
+		logger.Printf("Failed to create upload request: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+	// Try Digest auth first
+	uploadResp, err := makeAuthenticatedRequest(httpReq, payload.Username, payload.Password)
+	if err != nil {
+		logger.Printf("Upload failed: %v", err)
+		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer uploadResp.Body.Close()
+
+	uploadBody, _ := io.ReadAll(uploadResp.Body)
+	logger.Printf("Upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
+
+	if uploadResp.StatusCode >= 400 {
+		http.Error(w, string(uploadBody), uploadResp.StatusCode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"status":  uploadResp.StatusCode,
+		"message": "ACAP uploaded successfully",
+	})
+}
+
+// handleUploadLicense handles license XML upload to camera
+func handleUploadLicense(w http.ResponseWriter, r *http.Request) {
+	if !setCORSHeaders(w, r) {
+		return
+	}
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		URL        string `json:"url"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		LicenseXML string `json:"licenseXML"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		logger.Printf("Failed to decode upload-license request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	logger.Printf("Uploading license XML to %s (XML length: %d)", payload.URL, len(payload.LicenseXML))
+
+	// Create multipart form-data with license XML
+	var buf bytes.Buffer
+	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Disposition: form-data; name=\"fileData\"; filename=\"license.xml\"\r\n")
+	buf.WriteString("Content-Type: text/xml\r\n")
+	buf.WriteString("\r\n")
+	buf.WriteString(payload.LicenseXML)
+	buf.WriteString("\r\n")
+	buf.WriteString("--" + boundary + "--\r\n")
+
+	// Upload to camera with Digest Auth
+	httpReq, err := http.NewRequest("POST", payload.URL, &buf)
+	if err != nil {
+		logger.Printf("Failed to create upload request: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+	// Try Digest auth first
+	uploadResp, err := makeAuthenticatedRequest(httpReq, payload.Username, payload.Password)
+	if err != nil {
+		logger.Printf("License upload failed: %v", err)
+		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer uploadResp.Body.Close()
+
+	uploadBody, _ := io.ReadAll(uploadResp.Body)
+	logger.Printf("License upload response status: %d, body: %s", uploadResp.StatusCode, string(uploadBody))
+
+	if uploadResp.StatusCode >= 400 {
+		http.Error(w, string(uploadBody), uploadResp.StatusCode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"status":  uploadResp.StatusCode,
+		"message": "License uploaded successfully",
+	})
+}
+
+// makeAuthenticatedRequest handles Digest auth for camera requests
+func makeAuthenticatedRequest(req *http.Request, username, password string) (*http.Response, error) {
+	// First request to get challenge
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != 401 {
+		return resp, nil // No auth needed or success
+	}
+	resp.Body.Close()
+
+	// Parse Digest challenge
+	authHeader := resp.Header.Get("WWW-Authenticate")
+	challenge, err := parseDigestChallenge(authHeader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse auth challenge: %w", err)
+	}
+
+	// Create new request with auth
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, _ = io.ReadAll(req.Body)
+	}
+
+	req2, err := http.NewRequest(req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy headers
+	for k, v := range req.Header {
+		req2.Header[k] = v
+	}
+
+	// Calculate and add Digest auth
+	digestAuth := calculateDigestAuthFromChallenge(&ProxyRequest{
+		URL:      req.URL.String(),
+		Method:   req.Method,
+		Username: username,
+		Password: password,
+	}, challenge)
+
+	req2.Header.Set("Authorization", digestAuth)
+
+	return client.Do(req2)
+}
+
+// calculateDigestAuthFromChallenge calculates Digest auth header
+func calculateDigestAuthFromChallenge(req *ProxyRequest, challenge *DigestChallenge) string {
+	return calculateDigestAuth(req, challenge)
 }

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Extension Service Worker Fetch</title>
+</head>
+<body>
+    <h1>Test Extension Fetch to Localhost</h1>
+    <button id="testFetch">Test Fetch to Proxy</button>
+    <button id="testExtension">Test via Extension</button>
+    <pre id="output"></pre>
+
+    <script>
+        const output = document.getElementById('output');
+        const EXTENSION_ID = 'ojhdgnojgelfiejpgipjddfddgefdpfa';
+
+        document.getElementById('testFetch').addEventListener('click', async () => {
+            output.textContent = 'Testing direct fetch to proxy...\n';
+            try {
+                const response = await fetch('http://127.0.0.1:9876/health');
+                const data = await response.json();
+                output.textContent += 'SUCCESS: ' + JSON.stringify(data, null, 2);
+            } catch (err) {
+                output.textContent += 'FAILED: ' + err.message;
+            }
+        });
+
+        document.getElementById('testExtension').addEventListener('click', async () => {
+            output.textContent = 'Testing fetch via extension...\n';
+            try {
+                chrome.runtime.sendMessage(
+                    EXTENSION_ID,
+                    { command: 'health_check' },
+                    (response) => {
+                        if (chrome.runtime.lastError) {
+                            output.textContent += 'ERROR: ' + chrome.runtime.lastError.message;
+                        } else {
+                            output.textContent += 'SUCCESS: ' + JSON.stringify(response, null, 2);
+                        }
+                    }
+                );
+            } catch (err) {
+                output.textContent += 'FAILED: ' + err.message;
+            }
+        });
+    </script>
+</body>
+</html>

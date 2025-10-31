@@ -1,0 +1,71 @@
+#!/bin/bash
+# postinst script for anava-local-connector
+
+set -e
+
+# Get the user who invoked sudo (or current user if not using sudo)
+REAL_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+
+echo "Installing Anava Local Connector for user: ${REAL_USER}"
+
+# Create systemd user service directory
+SYSTEMD_USER_DIR="${USER_HOME}/.config/systemd/user"
+mkdir -p "${SYSTEMD_USER_DIR}"
+
+# Create systemd user service file
+cat > "${SYSTEMD_USER_DIR}/anava-local-connector.service" <<EOF
+[Unit]
+Description=Anava Local Connector Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/anava/local-connector/local-connector --proxy-service
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Create native messaging host manifest directory
+NATIVE_MESSAGING_DIR="${USER_HOME}/.config/google-chrome/NativeMessagingHosts"
+mkdir -p "${NATIVE_MESSAGING_DIR}"
+
+# Create native messaging host manifest
+cat > "${NATIVE_MESSAGING_DIR}/com.anava.local_connector.json" <<EOF
+{
+  "name": "com.anava.local_connector",
+  "description": "Anava Local Connector for camera network access",
+  "path": "/opt/anava/local-connector/local-connector",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://PLACEHOLDER_EXTENSION_ID/"
+  ]
+}
+EOF
+
+# Set ownership to the real user
+chown -R "${REAL_USER}:${REAL_USER}" "${SYSTEMD_USER_DIR}"
+chown -R "${REAL_USER}:${REAL_USER}" "${NATIVE_MESSAGING_DIR}"
+
+# Enable and start the service as the user
+if command -v sudo > /dev/null 2>&1; then
+    sudo -u "${REAL_USER}" systemctl --user daemon-reload
+    sudo -u "${REAL_USER}" systemctl --user enable anava-local-connector.service
+    sudo -u "${REAL_USER}" systemctl --user start anava-local-connector.service
+
+    echo "Service started successfully"
+else
+    echo "Please run the following commands to start the service:"
+    echo "  systemctl --user daemon-reload"
+    echo "  systemctl --user enable anava-local-connector.service"
+    echo "  systemctl --user start anava-local-connector.service"
+fi
+
+echo "Installation complete!"
+
+exit 0

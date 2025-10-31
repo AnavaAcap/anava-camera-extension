@@ -1,79 +1,70 @@
-# Extension Icons
+# Anava Local Connector - Icons
 
-## Required Sizes
+## Source
 
-Chrome extensions require 3 icon sizes:
-- 16x16 - Toolbar icon
-- 48x48 - Extension management page
-- 128x128 - Chrome Web Store
+- **icon-design.svg** - Master SVG icon design (128x128)
+  - Professional design with camera + network motif
+  - Blue gradient background (#2563EB to #1E40AF)
+  - White camera icon with lens detail
+  - Network connection indicators
 
-## Placeholder Icons
+## Generated Icons
 
-Currently using placeholder icons. To replace:
+Run `../scripts/generate-icons.sh` to generate PNG icons:
 
-1. Create PNG files:
-   - `icon16.png` (16x16 pixels)
-   - `icon48.png` (48x48 pixels)
-   - `icon128.png` (128x128 pixels)
+- icon-16.png (16x16) - Chrome extension toolbar
+- icon-48.png (48x48) - Chrome extension management page
+- icon-128.png (128x128) - Chrome Web Store
 
-2. Design Guidelines:
-   - Use Anava brand colors
-   - Include camera or network symbol
-   - Keep it simple and recognizable
-   - PNG format with transparency
+## Requirements
 
-3. Recommended Tools:
-   - Figma
-   - Sketch
-   - Adobe Illustrator
-   - Online: https://www.favicon.cc/
+Install an SVG converter:
 
-## Creating Placeholder Icons
-
-### Using ImageMagick (if installed):
-
+**macOS:**
 ```bash
-# Create simple colored squares as placeholders
-convert -size 16x16 xc:#667eea icons/icon16.png
-convert -size 48x48 xc:#667eea icons/icon48.png
-convert -size 128x128 xc:#667eea icons/icon128.png
+brew install librsvg
+# or
+brew install imagemagick
 ```
 
-### Using Python PIL:
-
-```python
-from PIL import Image, ImageDraw
-
-for size in [16, 48, 128]:
-    img = Image.new('RGB', (size, size), color='#667eea')
-    draw = ImageDraw.Draw(img)
-    # Add text or shapes
-    img.save(f'icons/icon{size}.png')
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install librsvg2-bin
 ```
 
-### Using Online Tools:
-
-1. Go to https://www.favicon-generator.org/
-2. Upload base image
-3. Download generated sizes
-4. Rename to icon16.png, icon48.png, icon128.png
-
-## Temporary Solution
-
-For development, you can comment out icon references in manifest.json:
-
-```json
-{
-  "action": {
-    "default_popup": "popup.html"
-    // Temporarily disabled icons
-    // "default_icon": {
-    //   "16": "icons/icon16.png",
-    //   "48": "icons/icon48.png",
-    //   "128": "icons/icon128.png"
-    // }
-  }
-}
+**Fedora/RHEL:**
+```bash
+sudo dnf install librsvg2-tools
 ```
 
-Chrome will use a generic extension icon as fallback.
+## Manual Generation (without script)
+
+### Using rsvg-convert:
+```bash
+rsvg-convert -w 16 -h 16 icon-design.svg > icon-16.png
+rsvg-convert -w 48 -h 48 icon-design.svg > icon-48.png
+rsvg-convert -w 128 -h 128 icon-design.svg > icon-128.png
+```
+
+### Using ImageMagick:
+```bash
+convert -background none -density 1200 -resize 16x16 icon-design.svg icon-16.png
+convert -background none -density 1200 -resize 48x48 icon-design.svg icon-48.png
+convert -background none -density 1200 -resize 128x128 icon-design.svg icon-128.png
+```
+
+### Using Inkscape:
+```bash
+inkscape icon-design.svg --export-filename=icon-16.png --export-width=16 --export-height=16
+inkscape icon-design.svg --export-filename=icon-48.png --export-width=48 --export-height=48
+inkscape icon-design.svg --export-filename=icon-128.png --export-width=128 --export-height=128
+```
+
+## CI/CD
+
+The GitHub Actions release workflow automatically generates icons during the build process.
+
+If you're developing locally and need icons, either:
+1. Install rsvg-convert or ImageMagick and run the script
+2. Generate manually using commands above
+3. Use placeholder icons temporarily (any PNG files with correct dimensions)

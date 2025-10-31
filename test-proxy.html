@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Proxy Connection</title>
+</head>
+<body>
+    <h1>Test Proxy Server</h1>
+    <button onclick="testProxy()">Test Proxy</button>
+    <button onclick="testCamera()">Test Camera via Proxy</button>
+    <pre id="output"></pre>
+
+    <script>
+        async function testProxy() {
+            const output = document.getElementById('output');
+            output.textContent = 'Testing proxy health...\\n';
+
+            try {
+                const response = await fetch('http://127.0.0.1:9876/health');
+                const data = await response.json();
+                output.textContent += 'Proxy health: ' + JSON.stringify(data, null, 2) + '\\n';
+            } catch (error) {
+                output.textContent += 'Error: ' + error.message + '\\n';
+            }
+        }
+
+        async function testCamera() {
+            const output = document.getElementById('output');
+            output.textContent = 'Testing camera via proxy...\\n';
+
+            try {
+                const response = await fetch('http://127.0.0.1:9876/proxy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: 'https://192.168.50.156/axis-cgi/basicdeviceinfo.cgi',
+                        method: 'POST',
+                        username: '',
+                        password: '',
+                        body: {
+                            apiVersion: '1.0',
+                            method: 'getProperties',
+                            params: {
+                                propertyList: ['Brand', 'ProdType']
+                            }
+                        }
+                    })
+                });
+
+                const data = await response.json();
+                output.textContent += 'Camera response:\\n' + JSON.stringify(data, null, 2) + '\\n';
+            } catch (error) {
+                output.textContent += 'Error: ' + error.message + '\\n';
+                console.error('Full error:', error);
+            }
+        }
+    </script>
+</body>
+</html>

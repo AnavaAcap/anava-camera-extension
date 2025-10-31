@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Anava Local Connector</title>
+    <organization>com.anava</organization>
+    <readme file="README.html"/>
+    <welcome file="Welcome.html"/>
+    <conclusion file="Conclusion.html"/>
+    
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.anava.local-connector"/>
+        </line>
+    </choices-outline>
+    
+    <choice id="default"/>
+    
+    <choice id="com.anava.local-connector" visible="false">
+        <pkg-ref id="com.anava.local-connector"/>
+    </choice>
+    
+    <pkg-ref id="com.anava.local-connector" version="VERSION_PLACEHOLDER" onConclusion="none">
+        AnavaLocalConnector-component.pkg
+    </pkg-ref>
+    
+    <installation-check script="installCheck()"/>
+    
+    <script>
+    <![CDATA[
+        function installCheck() {
+            // Check macOS version (require 11.0+)
+            var osVersion = system.version.ProductVersion;
+            var majorVersion = parseInt(osVersion.split('.')[0]);
+            
+            if (majorVersion < 11) {
+                my.result.title = 'Unsupported macOS Version';
+                my.result.message = 'This package requires macOS 11.0 (Big Sur) or later. You have macOS ' + osVersion + '.';
+                my.result.type = 'Fatal';
+                return false;
+            }
+            
+            return true;
+        }
+    ]]>
+    </script>
+</installer-gui-script>

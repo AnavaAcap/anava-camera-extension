@@ -88,6 +88,41 @@
       </div>
     </div>
 
+    <!-- Migration Notice (shown if old version detected) -->
+    <div id="migration-required" class="alert-banner alert-info" style="display: none;">
+      <div class="alert-icon">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M10 6V11M10 14H10.01M19 10C19 14.9706 14.9706 19 10 19C5.02944 19 1 14.9706 1 10C1 5.02944 5.02944 1 10 1C14.9706 1 19 5.02944 19 10Z"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="alert-content">
+        <h3 class="alert-title">⚠️ Upgrade Available</h3>
+        <div class="alert-message">
+          <p>An older version of the Anava Local Connector was detected on your system.</p>
+          <p>Please upgrade to the new version for improved stability and automatic updates.</p>
+        </div>
+        <button id="upgrade-now" class="btn-secondary" style="margin-top: 12px;">
+          <svg class="btn-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 13V3M8 3L4 7M8 3L12 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Download New Version</span>
+        </button>
+        <details style="margin-top: 12px;">
+          <summary style="cursor: pointer; color: var(--text-secondary); font-size: 0.875rem;">Manual cleanup (optional)</summary>
+          <div style="margin-top: 8px; padding: 8px; background: var(--bg-secondary); border-radius: 6px;">
+            <p style="font-size: 0.8125rem; margin-bottom: 8px;">The old version can be safely removed by running:</p>
+            <code style="display: block; padding: 8px; background: var(--bg-tertiary); border-radius: 4px; font-size: 0.75rem; overflow-x: auto;">
+              curl -sSL https://connect.anava.cloud/uninstall-old.sh | bash
+            </code>
+            <p style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 8px;">
+              Or download the script from: <a href="https://connect.anava.cloud/uninstall-old.sh" target="_blank">uninstall-old.sh</a>
+            </p>
+          </div>
+        </details>
+      </div>
+    </div>
+
     <!-- Setup Instructions (shown if not fully connected) -->
     <div id="setup-instructions" class="alert-banner alert-warning" style="display: none;">
       <div class="alert-icon">
@@ -101,6 +136,14 @@
         <div id="instructions-text" class="alert-message">
           <p>Checking connection status...</p>
         </div>
+        <!-- Start Proxy Button (shown when proxy is not running) -->
+        <button id="start-proxy-btn" class="btn-secondary" style="display: none; margin-top: 12px;">
+          <svg class="btn-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M5 3L12 8L5 13V3Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="currentColor"/>
+          </svg>
+          <span id="start-proxy-text">Start Proxy Server</span>
+        </button>
+        <div id="start-proxy-status" class="status-message" style="display: none; margin-top: 8px;"></div>
       </div>
     </div>
 

@@ -1,42 +1,94 @@
-# QUICK TEST GUIDE - 3 Steps to Find the Bug
+# QUICK TEST GUIDE - Chrome Extension with Full TypeScript Services
 
-## TL;DR
+## Prerequisites
 
-Extension has been enhanced with 🎯 **target tracking** for IP 192.168.50.156.
+1. **Build Extension:**
+   ```bash
+   cd /Users/ryanwager/anava-camera-extension
+   npm run build
+   ```
 
-## Step 1: Reload Extension (10 seconds)
+2. **Start Proxy Server:**
+   ```bash
+   ./install-proxy.sh
+
+   # Verify it's running
+   curl http://127.0.0.1:9876/health
+   # Expected: {"status":"healthy"}
+   ```
+
+## Step 1: Load Extension (30 seconds)
 
 1. Open `chrome://extensions/`
-2. Find "Anava Camera Deployment"
-3. Click the **reload** icon (circular arrow)
+2. Enable **Developer mode** (toggle in top right)
+3. Click **Load unpacked**
+4. Select folder: `/Users/ryanwager/anava-camera-extension/dist`
+5. Extension should load with no errors
 
-## Step 2: Open Console (10 seconds)
+## Step 2: Check Service Worker (10 seconds)
 
-1. Right-click extension icon in toolbar
-2. Select **"Inspect Popup"**
-3. Click **Console** tab
-4. **KEEP THIS WINDOW OPEN**
+1. In chrome://extensions, find the extension card
+2. Click **"Inspect views: service worker"**
+3. Console should show:
+   ```
+   [Background] Anava Local Network Bridge initialized
+   ```
+4. **KEEP THIS WINDOW OPEN** for test logs
 
-## Step 3: Run Test (30 seconds)
+## Step 3: Test from Web App (60 seconds)
 
-### Option A: Single IP Test (RECOMMENDED)
+### Get Extension ID
+1. Copy the extension ID from chrome://extensions
+2. Update web app `.env.local`:
+   ```bash
+   VITE_EXTENSION_ID=your-extension-id-here
+   ```
 
-1. Verify credentials in popup:
-   - Username: `anava`
-   - Password: `baton`
+### Test Health Check
+In web app console (http://localhost:5173):
 
-2. Click **"DEBUG: Test .156 Only"** button
+```javascript
+chrome.runtime.sendMessage(
+  'YOUR_EXTENSION_ID',
+  { command: 'health_check', payload: {} },
+  response => console.log(response)
+);
+```
 
-3. Watch console for result:
-   - ✅ Success = Camera found!
-   - ❌ Failed = See error details
+**Expected:**
+```javascript
+{
+  success: true,
+  data: {
+    status: 'healthy',
+    proxyServer: {status: 'healthy'}
+  }
+}
+```
 
-### Option B: Full Network Scan
-
-1. Set network: `192.168.50.0/24`
-2. Set credentials: `anava` / `baton`
-3. Click **"Start Scan"**
-4. Watch for 🎯 markers when .156 is scanned
+### Test Network Scan
+```javascript
+chrome.runtime.sendMessage(
+  'YOUR_EXTENSION_ID',
+  {
+    command: 'scan_network',
+    payload: {
+      subnet: '192.168.50.0/24',
+      credentials: {
+        username: 'anava',
+        password: 'baton'
+      }
+    }
+  },
+  response => {
+    console.log('Scan result:', response);
+    if (response.success) {
+      console.log('Cameras found:', response.data.cameras.length);
+      console.table(response.data.cameras);
+    }
+  }
+);
+```
 
 ## What You'll See
 

@@ -4,7 +4,7 @@
     "module": "ES2020",
     "lib": ["ES2020", "DOM"],
     "outDir": "./dist",
-    "rootDir": "./",
+    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -19,9 +19,7 @@
     "types": ["chrome"]
   },
   "include": [
-    "src/**/*",
-    "popup.js",
-    "background.js"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",
