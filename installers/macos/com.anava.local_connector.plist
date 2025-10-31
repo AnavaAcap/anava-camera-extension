@@ -6,7 +6,7 @@
     <string>com.anava.local_connector</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/USERNAME/Applications/AnavaLocalConnector/local-connector</string>
+        <string>/Applications/AnavaLocalConnector/local-connector</string>
         <string>--proxy-service</string>
     </array>
     <key>RunAtLoad</key>

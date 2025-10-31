@@ -4,43 +4,48 @@
 
 set -e
 
-# Get the current user (not root, since installer runs as user)
-CURRENT_USER="${USER}"
+# Detect the actual logged-in user (not root, even though this runs as root)
+CURRENT_USER=$(stat -f%Su /dev/console)
 USER_HOME=$(eval echo "~${CURRENT_USER}")
 
 echo "Installing Anava Local Connector for user: ${CURRENT_USER}"
 echo "User home directory: ${USER_HOME}"
 
-# Replace USERNAME placeholders with actual username
+# Paths
+SYSTEM_BINARY="/Applications/AnavaLocalConnector/local-connector"
 NATIVE_MESSAGING_HOST="${USER_HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anava.local_connector.json"
 LAUNCH_AGENT="${USER_HOME}/Library/LaunchAgents/com.anava.local_connector.plist"
-BINARY_PATH="${USER_HOME}/Applications/AnavaLocalConnector/local-connector"
+TEMPLATE_DIR="/Library/Application Support/AnavaLocalConnector/templates"
 
-# Create directories if they don't exist
-mkdir -p "${USER_HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts"
-mkdir -p "${USER_HOME}/Library/LaunchAgents"
-mkdir -p "${USER_HOME}/Applications/AnavaLocalConnector"
-mkdir -p "${USER_HOME}/Library/Logs"
+# Create user directories if they don't exist
+sudo -u "${CURRENT_USER}" mkdir -p "${USER_HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+sudo -u "${CURRENT_USER}" mkdir -p "${USER_HOME}/Library/LaunchAgents"
+sudo -u "${CURRENT_USER}" mkdir -p "${USER_HOME}/Library/Logs"
 
-# Fix the native messaging host manifest
-if [ -f "${NATIVE_MESSAGING_HOST}" ]; then
-    sed -i '' "s|/Users/USERNAME|${USER_HOME}|g" "${NATIVE_MESSAGING_HOST}"
-    echo "Updated native messaging host manifest"
+# Copy and configure native messaging host manifest
+if [ -f "${TEMPLATE_DIR}/com.anava.local_connector.json" ]; then
+    cp "${TEMPLATE_DIR}/com.anava.local_connector.json" "${NATIVE_MESSAGING_HOST}"
+    chown "${CURRENT_USER}" "${NATIVE_MESSAGING_HOST}"
+    # No need to replace USERNAME - template uses /Applications (system-wide)
+    echo "Installed native messaging host manifest"
 fi
 
-# Fix the LaunchAgent plist
-if [ -f "${LAUNCH_AGENT}" ]; then
+# Copy and configure LaunchAgent plist
+if [ -f "${TEMPLATE_DIR}/com.anava.local_connector.plist" ]; then
+    cp "${TEMPLATE_DIR}/com.anava.local_connector.plist" "${LAUNCH_AGENT}"
+    chown "${CURRENT_USER}" "${LAUNCH_AGENT}"
+    # Replace USERNAME placeholder with actual user
     sed -i '' "s|/Users/USERNAME|${USER_HOME}|g" "${LAUNCH_AGENT}"
-    echo "Updated LaunchAgent plist"
+    echo "Installed LaunchAgent plist"
 fi
 
 # Set executable permission on binary
-chmod +x "${BINARY_PATH}"
+chmod +x "${SYSTEM_BINARY}"
 echo "Set executable permission on binary"
 
-# Load the LaunchAgent (start proxy service)
-launchctl unload "${LAUNCH_AGENT}" 2>/dev/null || true
-launchctl load "${LAUNCH_AGENT}"
+# Load the LaunchAgent as the actual user (not root)
+sudo -u "${CURRENT_USER}" launchctl unload "${LAUNCH_AGENT}" 2>/dev/null || true
+sudo -u "${CURRENT_USER}" launchctl load "${LAUNCH_AGENT}"
 echo "Loaded LaunchAgent - proxy service is now running"
 
 # Wait a moment for service to start
@@ -51,11 +56,15 @@ if curl -s http://127.0.0.1:9876/health > /dev/null 2>&1; then
     echo "✓ Proxy service is running successfully"
 else
     echo "⚠ Warning: Proxy service may not have started correctly"
+    echo "  You may need to start it manually with:"
+    echo "  launchctl load ~/Library/LaunchAgents/com.anava.local_connector.plist"
 fi
 
+echo ""
 echo "Installation complete!"
 echo ""
 echo "The Anava Local Connector has been installed and started."
+echo "Binary location: /Applications/AnavaLocalConnector/local-connector"
 echo "You can now use the Chrome extension to deploy cameras on your local network."
 
 exit 0
