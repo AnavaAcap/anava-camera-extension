@@ -265,6 +265,56 @@ async function checkVersionIssues() {
 }
 
 /**
+ * Check for old installation and show migration notice
+ */
+async function checkOldInstallation() {
+  try {
+    // Send message to native host to check for old files
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        'com.anava.local_connector',
+        { type: 'CHECK_OLD_INSTALLATION' },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    if (response && response.success && response.data && response.data.hasOldVersion) {
+      console.log('Old installation detected:', response.data.oldPaths);
+
+      // Show migration notice
+      const migrationNotice = document.getElementById('migration-required');
+      if (migrationNotice) {
+        migrationNotice.style.display = 'block';
+
+        // Handle upgrade button click
+        const upgradeBtn = document.getElementById('upgrade-now');
+        if (upgradeBtn) {
+          upgradeBtn.addEventListener('click', () => {
+            // Open installation page
+            chrome.tabs.create({
+              url: 'https://connect.anava.cloud/install?reason=upgrade_from_old'
+            });
+          });
+        }
+      }
+
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.log('Old installation check failed:', error.message);
+    return false;
+  }
+}
+
+/**
  * Initialize popup
  */
 async function initialize() {
@@ -275,7 +325,10 @@ async function initialize() {
   // Set web app URL
   openWebAppBtn.href = WEB_APP_URL;
 
-  // Check for version issues first
+  // Check for old installation first
+  await checkOldInstallation();
+
+  // Check for version issues
   await checkVersionIssues();
 
   // Check both proxy server and web app

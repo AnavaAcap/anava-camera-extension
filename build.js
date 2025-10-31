@@ -26,8 +26,27 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 2: Copy background script (using root background.js, not TypeScript)
-  console.log('2️⃣  Copying background script...');
+  // Step 2: Build content script (TypeScript → JavaScript)
+  console.log('2️⃣  Building content script...');
+  try {
+    await esbuild.build({
+      entryPoints: ['src/content-script.ts'],
+      bundle: true,
+      outfile: 'dist/content-script.js',
+      platform: 'browser',
+      target: 'es2020',
+      format: 'iife', // Immediately Invoked Function Expression for content scripts
+      sourcemap: false,
+      minify: false,
+    });
+    console.log('✅ Content script built\n');
+  } catch (error) {
+    console.error('❌ Content script build failed:', error);
+    process.exit(1);
+  }
+
+  // Step 3: Copy background script (using root background.js, not TypeScript)
+  console.log('3️⃣  Copying background script...');
   try {
     fs.copyFileSync('background.js', 'dist/background.js');
     console.log('✅ Background script copied\n');
@@ -36,8 +55,8 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 3: Copy static files
-  console.log('3️⃣  Copying static files...');
+  // Step 4: Copy static files
+  console.log('4️⃣  Copying static files...');
   const staticFiles = [
     'manifest.json',
     'popup.html',

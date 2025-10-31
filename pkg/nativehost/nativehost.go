@@ -18,10 +18,11 @@ const VERSION = "2.0.0"
 
 // Message types
 const (
-	TypeProxyRequest = "PROXY_REQUEST"
-	TypeGetVersion   = "GET_VERSION"
-	TypeHealthCheck  = "HEALTH_CHECK"
-	TypeConfigure    = "CONFIGURE"
+	TypeProxyRequest         = "PROXY_REQUEST"
+	TypeGetVersion           = "GET_VERSION"
+	TypeHealthCheck          = "HEALTH_CHECK"
+	TypeConfigure            = "CONFIGURE"
+	TypeCheckOldInstallation = "CHECK_OLD_INSTALLATION"
 )
 
 // Request represents incoming message from Chrome extension
@@ -77,6 +78,9 @@ func Run(logger *log.Logger) error {
 
 	case TypeConfigure:
 		return handleConfigure(logger, req)
+
+	case TypeCheckOldInstallation:
+		return handleCheckOldInstallation(logger)
 
 	case TypeProxyRequest, "": // Empty type defaults to proxy request for backwards compatibility
 		return handleProxyRequest(logger, req)
@@ -207,6 +211,54 @@ func authenticateWithBackend(logger *log.Logger, backendURL, projectID, nonce st
 	}
 
 	return authResp.SessionToken, nil
+}
+
+func handleCheckOldInstallation(logger *log.Logger) error {
+	logger.Printf("Handling CHECK_OLD_INSTALLATION request")
+
+	// Check for old installation files
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		logger.Printf("Failed to get home directory: %v", err)
+		return sendError(fmt.Sprintf("Failed to get home directory: %v", err))
+	}
+
+	oldPaths := []string{
+		homeDir + "/.local/bin/proxy-server",
+		homeDir + "/.local/bin/native-host-proxy",
+		homeDir + "/.config/anava/proxy.conf",
+		homeDir + "/Library/LaunchAgents/com.anava.proxy.plist",
+		homeDir + "/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anava.proxy.json",
+	}
+
+	foundPaths := []string{}
+	for _, path := range oldPaths {
+		if _, err := os.Stat(path); err == nil {
+			foundPaths = append(foundPaths, path)
+			logger.Printf("Found old file: %s", path)
+		}
+	}
+
+	hasOldVersion := len(foundPaths) > 0
+
+	resp := Response{
+		Success: true,
+		Data: map[string]interface{}{
+			"hasOldVersion": hasOldVersion,
+			"oldPaths":      foundPaths,
+			"message":       getOldVersionMessage(hasOldVersion),
+		},
+	}
+
+	logger.Printf("Old installation check complete: hasOldVersion=%v, foundPaths=%d", hasOldVersion, len(foundPaths))
+	return sendMessage(resp)
+}
+
+func getOldVersionMessage(hasOldVersion bool) string {
+	if hasOldVersion {
+		return "An older version of the Anava Local Connector was detected. Please upgrade for improved stability and automatic updates."
+	}
+	return "No old installation detected"
 }
 
 func handleProxyRequest(logger *log.Logger, req *Request) error {

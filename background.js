@@ -66,11 +66,43 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 });
 
 /**
- * Listen for messages from extension popup (internal messages)
+ * Listen for messages from extension popup and content scripts (internal messages)
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('[Background] Received internal message:', message.command);
+  console.log('[Background] Received internal message:', message.type || message.command);
 
+  // Handle messages by type (from content script)
+  if (message.type) {
+    switch (message.type) {
+      case 'CONFIG_DISCOVERED':
+        handleConfigDiscovered(message.config, message.origin)
+          .then(result => sendResponse({ success: true, data: result }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'SCAN_CAMERAS':
+        handleScanNetwork(message)
+          .then(result => sendResponse({ success: true, data: result }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'AUTHENTICATE_WITH_BACKEND':
+        handleAuthenticateWithBackend(message)
+          .then(result => sendResponse({ success: true, data: result }))
+          .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'REQUEST_CONFIG_DISCOVERY':
+        // Content script is asking if we want config discovery
+        sendResponse({ success: true, shouldDiscover: true });
+        return false;
+
+      default:
+        break;
+    }
+  }
+
+  // Handle messages by command (from popup)
   switch (message.command) {
     case 'install_proxy':
       handleInstallProxy()
@@ -84,8 +116,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch(error => sendResponse({ installed: false, error: error.message }));
       return true;
 
+    case 'generate_license':
+      // Forward to offscreen document (license worker)
+      // This is handled by the offscreen document itself
+      return false;
+
     default:
-      sendResponse({ success: false, error: 'Unknown internal command: ' + message.command });
+      sendResponse({ success: false, error: 'Unknown internal command: ' + (message.command || message.type) });
       return false;
   }
 });
@@ -878,6 +915,89 @@ async function handleCheckLaunchAgent() {
     return response.ok;
   } catch (error) {
     return false;
+  }
+}
+
+/**
+ * Handle configuration discovered from terraform-spa site
+ */
+async function handleConfigDiscovered(config, origin) {
+  console.log('[Background] Configuration discovered from:', origin);
+  console.log('[Background] Config:', config);
+
+  // Validate the extension ID matches (if we're published)
+  const ourExtensionId = chrome.runtime.id;
+  if (config.extensionId !== 'PLACEHOLDER_EXTENSION_ID' && config.extensionId !== ourExtensionId) {
+    console.warn('[Background] Extension ID mismatch:', config.extensionId, 'vs', ourExtensionId);
+    return { validated: false, reason: 'Extension ID mismatch' };
+  }
+
+  // Store the configuration
+  await chrome.storage.local.set({
+    discoveredConfig: config,
+    discoveryOrigin: origin,
+    discoveryTime: Date.now()
+  });
+
+  // Update badge to show we're connected to a project
+  chrome.action.setBadgeText({ text: '✓' });
+  chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' }); // Green
+
+  return {
+    validated: true,
+    projectId: config.projectId,
+    features: config.features
+  };
+}
+
+/**
+ * Handle authentication with backend using nonce
+ */
+async function handleAuthenticateWithBackend(payload) {
+  const { nonce, backendUrl } = payload;
+
+  try {
+    // Get discovered config if not provided
+    let apiUrl = backendUrl;
+    if (!apiUrl) {
+      const storage = await chrome.storage.local.get(['discoveredConfig']);
+      if (storage.discoveredConfig) {
+        apiUrl = storage.discoveredConfig.backendUrl;
+      }
+    }
+
+    if (!apiUrl) {
+      throw new Error('No backend URL available');
+    }
+
+    // Forward to native host for authentication
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST_ID,
+        {
+          type: 'AUTHENTICATE',
+          nonce,
+          backendUrl: apiUrl
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    return {
+      success: true,
+      token: response.token,
+      authenticated: true
+    };
+
+  } catch (error) {
+    console.error('[Background] Authentication failed:', error);
+    throw error;
   }
 }
 

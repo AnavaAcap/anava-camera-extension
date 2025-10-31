@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "extensionId": "PLACEHOLDER_EXTENSION_ID",
+  "backendUrl": "https://api.your-project.com",
+  "projectId": "your-project-123",
+  "features": ["camera-discovery", "acap-deployment"],
+  "description": "Configuration for Anava Local Connector Chrome extension integration"
+}

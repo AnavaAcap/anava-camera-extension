@@ -1,0 +1,278 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-binaries:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            output: local-connector-darwin-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            output: local-connector-darwin-amd64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            output: local-connector-windows-amd64.exe
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: local-connector-linux-amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -o ${{ matrix.output }} \
+            -ldflags="-s -w -X 'anava-camera-extension/pkg/nativehost.VERSION=${{ github.ref_name }}'" \
+            cmd/local-connector/main.go
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+
+  build-macos-installer:
+    needs: build-binaries
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: local-connector-darwin-arm64
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: local-connector-darwin-amd64
+
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            local-connector-darwin-arm64 \
+            local-connector-darwin-amd64 \
+            -output local-connector
+          chmod +x local-connector
+
+      - name: Build package
+        run: |
+          chmod +x scripts/build-macos-pkg.sh
+          ./scripts/build-macos-pkg.sh ${{ github.ref_name }}
+
+      # Code signing placeholder - requires secrets
+      # - name: Sign and notarize
+      #   env:
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      #     TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #     CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+      #     CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      #   run: |
+      #     chmod +x scripts/sign-and-notarize-macos.sh
+      #     ./scripts/sign-and-notarize-macos.sh AnavaLocalConnector.pkg
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: AnavaLocalConnector.pkg
+
+  build-windows-installer:
+    needs: build-binaries
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: local-connector-windows-amd64.exe
+
+      - name: Install WiX
+        run: choco install wixtoolset -y
+
+      - name: Build MSI
+        run: |
+          $env:PATH += ";C:\Program Files (x86)\WiX Toolset v3.11\bin"
+          .\scripts\build-windows-msi.ps1 ${{ github.ref_name }}
+
+      # Code signing placeholder
+      # - name: Sign installer
+      #   env:
+      #     CERT_P12: ${{ secrets.WINDOWS_CERT_P12 }}
+      #     CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      #   run: |
+      #     .\scripts\sign-windows-msi.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: AnavaLocalConnector.msi
+
+  build-linux-packages:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: local-connector-linux-amd64
+
+      - name: Make binary executable
+        run: chmod +x local-connector-linux-amd64
+
+      - name: Build DEB package
+        run: |
+          chmod +x scripts/build-linux-deb.sh
+          ./scripts/build-linux-deb.sh ${{ github.ref_name }}
+
+      - name: Install RPM tools
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - name: Build RPM package
+        run: |
+          chmod +x scripts/build-linux-rpm.sh
+          ./scripts/build-linux-rpm.sh ${{ github.ref_name }}
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            anava-local-connector_*.deb
+            anava-local-connector-*.rpm
+
+  build-extension:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          pip install Pillow
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Create extension zip
+        run: |
+          cd dist
+          zip -r ../anava-local-connector-extension-${{ github.ref_name }}.zip .
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-zip
+          path: anava-local-connector-extension-${{ github.ref_name }}.zip
+
+  create-release:
+    needs:
+      - build-macos-installer
+      - build-windows-installer
+      - build-linux-packages
+      - build-extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: List artifacts
+        run: ls -R
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            macos-installer/AnavaLocalConnector.pkg
+            windows-installer/AnavaLocalConnector.msi
+            linux-packages/*.deb
+            linux-packages/*.rpm
+            extension-zip/*.zip
+          draft: false
+          prerelease: false
+          body: |
+            # Anava Local Connector ${{ github.ref_name }}
+
+            ## Installation
+
+            ### Chrome Extension
+            1. Download `anava-local-connector-extension-${{ github.ref_name }}.zip`
+            2. Unzip the file
+            3. Go to `chrome://extensions/`
+            4. Enable "Developer mode"
+            5. Click "Load unpacked"
+            6. Select the unzipped folder
+
+            ### Companion App
+
+            **macOS:**
+            - Download `AnavaLocalConnector.pkg`
+            - Double-click to install
+            - LaunchAgent will auto-start the service
+
+            **Windows:**
+            - Download `AnavaLocalConnector.msi`
+            - Double-click to install
+            - Service will auto-start
+
+            **Linux (Ubuntu/Debian):**
+            ```bash
+            sudo dpkg -i anava-local-connector_${{ github.ref_name }}_amd64.deb
+            systemctl --user enable anava-local-connector
+            systemctl --user start anava-local-connector
+            ```
+
+            **Linux (Fedora/CentOS/RHEL):**
+            ```bash
+            sudo rpm -i anava-local-connector-${{ github.ref_name }}.x86_64.rpm
+            systemctl --user enable anava-local-connector
+            systemctl --user start anava-local-connector
+            ```
+
+            ## What's Changed
+            <!-- Add release notes here -->
+
+            ## Full Changelog
+            https://github.com/AnavaAcap/anava-camera-extension/compare/${{ github.event.before }}...${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
