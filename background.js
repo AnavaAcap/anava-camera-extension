@@ -415,8 +415,11 @@ async function checkCamera(ip, credentials) {
       deviceType: 'camera'
     };
   } catch (error) {
-    // Log first few errors to see what's failing
-    if (Math.random() < 0.01) { // Log 1% of errors
+    // Timeouts are expected (most IPs won't have cameras) - don't log them
+    // Only log unexpected errors (not timeout/abort)
+    if (!error.message.includes('timed out') &&
+        !error.message.includes('aborted') &&
+        Math.random() < 0.01) { // Log 1% of non-timeout errors
       console.error(`[Background] ${ip} error:`, error.message);
     }
     return null;
