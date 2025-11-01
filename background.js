@@ -287,96 +287,92 @@ async function handleScanNetwork(payload, sender) {
     const { baseIp, count } = parseCIDR(subnet);
     console.log(`[Background] Scanning ${count} IPs starting from ${baseIp}`);
 
-    // Generate IPs
+    // Generate ALL IPs to scan
     const ipsToScan = generateIpRange(baseIp, count);
-    console.log(`[Background] Generated ${ipsToScan.length} IPs to scan`);
-
-    // Worker pool pattern: maintain consistent concurrent load instead of batches
-    // CRITICAL: Lower concurrency to prevent overwhelming single-threaded proxy
-    const MAX_CONCURRENT = 15; // Conservative to keep proxy responsive to health checks
-    const discoveredCameras = [];
-    const discoveredAxisDevices = [];
     const totalIPs = ipsToScan.length;
-    let scannedCount = 0;
-    let progressUpdateCounter = 0;
+    console.log(`[Background] Generated ${totalIPs} IPs - sending bulk scan request to proxy`);
 
-    console.log(`[Background] Scanning ${totalIPs} IPs with ${MAX_CONCURRENT} concurrent workers...`);
+    // Send ONE request with ALL IPs to the proxy
+    const scanResponse = await fetch('http://127.0.0.1:9876/scan-network', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ips: ipsToScan,
+        username: credentials.username,
+        password: credentials.password
+      })
+    });
 
-    // Helper to broadcast progress to web app (via content script relay)
-    const broadcastProgress = async (scannedIPs) => {
-      if (sender && sender.tab && sender.tab.id) {
-        // Send directly to the tab that initiated the scan (no tabs permission needed when we have sender.tab.id)
-        try {
-          const progressData = {
-            type: 'scan_progress',
-            data: {
-              scannedIPs,
-              totalIPs,
-              axisDevices: discoveredAxisDevices.length,
-              cameras: discoveredCameras.length,
-              percentComplete: (scannedIPs / totalIPs) * 100
-            }
-          };
-
-          // Debug: Log first few updates
-          if (scannedIPs <= 20 || scannedIPs === totalIPs) {
-            console.log(`[Background] Sending progress to tab ${sender.tab.id}:`, progressData.data);
-          }
-
-          await chrome.tabs.sendMessage(sender.tab.id, progressData);
-        } catch (error) {
-          // Tab may have closed or content script not ready - ignore
-          if (!error.message.includes('No tab with id') &&
-              !error.message.includes('Receiving end does not exist')) {
-            console.error('[Background] Failed to send progress:', error.message);
-          }
-        }
-      } else {
-        console.warn('[Background] Cannot send progress - no sender.tab.id available');
-      }
-    };
-
-    // Worker pool: process IPs with consistent concurrency
-    let ipIndex = 0;
-    const workers = [];
-
-    // Create worker function that processes IPs sequentially
-    const worker = async () => {
-      while (ipIndex < ipsToScan.length) {
-        const ip = ipsToScan[ipIndex++];
-
-        const camera = await checkCamera(ip, credentials);
-        if (camera) {
-          discoveredAxisDevices.push(camera);
-          if (camera.deviceType === 'camera') {
-            discoveredCameras.push(camera);
-          }
-        }
-
-        scannedCount++;
-
-        // Broadcast progress every 10 IPs (fire-and-forget, don't block worker)
-        progressUpdateCounter++;
-        if (progressUpdateCounter >= 10 || scannedCount === totalIPs) {
-          broadcastProgress(scannedCount); // No await - don't block scanning
-          progressUpdateCounter = 0;
-        }
-      }
-    };
-
-    // Start MAX_CONCURRENT workers
-    for (let i = 0; i < Math.min(MAX_CONCURRENT, totalIPs); i++) {
-      workers.push(worker());
+    if (!scanResponse.ok) {
+      throw new Error(`Proxy returned ${scanResponse.status}: ${await scanResponse.text()}`);
     }
 
-    // Wait for all workers to complete
-    await Promise.all(workers);
+    const { scan_id } = await scanResponse.json();
+    console.log(`[Background] Scan started: ${scan_id}`);
 
-    // Final progress update
-    await broadcastProgress(totalIPs);
+    // Connect WebSocket for real-time progress
+    const ws = new WebSocket(`ws://127.0.0.1:9876/scan-results?scan_id=${scan_id}`);
+    const discoveredCameras = [];
 
-    console.log(`[Background] Scan complete. Found ${discoveredCameras.length} cameras total.`);
-    return { cameras: discoveredCameras };
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => {
+        console.log('[Background] WebSocket connected for scan progress');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const progress = JSON.parse(event.data);
+
+          // If camera found, add to list
+          if (progress.camera) {
+            discoveredCameras.push(progress.camera);
+            console.log(`[Background] Found camera: ${progress.camera.ip} - ${progress.camera.model}`);
+          }
+
+          // Broadcast progress to web app
+          if (sender && sender.tab && sender.tab.id) {
+            chrome.tabs.sendMessage(sender.tab.id, {
+              type: 'scan_progress',
+              data: {
+                scannedIPs: progress.scanned_count,
+                totalIPs: progress.total_ips,
+                cameras: progress.cameras_found,
+                percentComplete: progress.percent_done
+              }
+            }).catch(() => {
+              // Tab closed - ignore
+            });
+          }
+
+          // Check if scan complete
+          if (progress.is_complete) {
+            console.log(`[Background] Scan complete. Found ${discoveredCameras.length} cameras`);
+            ws.close();
+            resolve({ cameras: discoveredCameras });
+          }
+        } catch (error) {
+          console.error('[Background] Error processing progress:', error);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('[Background] WebSocket error:', error);
+        reject(new Error('WebSocket connection failed'));
+      };
+
+      ws.onclose = () => {
+        console.log('[Background] WebSocket closed');
+      };
+
+      // Timeout after 5 minutes (safety)
+      setTimeout(() => {
+        if (ws.readyState !== WebSocket.CLOSED) {
+          ws.close();
+          reject(new Error('Scan timeout after 5 minutes'));
+        }
+      }, 5 * 60 * 1000);
+    });
+
   } catch (error) {
     console.error('[Background] Network scan error:', error);
     throw new Error(`Network scan failed: ${error.message}`);

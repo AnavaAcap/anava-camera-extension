@@ -12,8 +12,7 @@
     "http://127.0.0.1:9876/*",
     "https://anava-ai.web.app/*",
     "https://anava-ai.firebaseapp.com/*",
-    "https://*.anava.cloud/*",
-    "https://api.github.com/*"
+    "https://*.anava.cloud/*"
   ],
   "content_scripts": [
     {
