@@ -292,7 +292,7 @@ async function handleScanNetwork(payload, sender) {
     console.log(`[Background] Generated ${ipsToScan.length} IPs to scan`);
 
     // Worker pool pattern: maintain consistent concurrent load instead of batches
-    const MAX_CONCURRENT = 20; // Smooth load on proxy (was 50 at once)
+    const MAX_CONCURRENT = 40; // Optimized for speed while keeping proxy responsive
     const discoveredCameras = [];
     const discoveredAxisDevices = [];
     const totalIPs = ipsToScan.length;
@@ -354,10 +354,10 @@ async function handleScanNetwork(payload, sender) {
 
         scannedCount++;
 
-        // Broadcast progress every 10 IPs (reduce message spam)
+        // Broadcast progress every 10 IPs (fire-and-forget, don't block worker)
         progressUpdateCounter++;
         if (progressUpdateCounter >= 10 || scannedCount === totalIPs) {
-          await broadcastProgress(scannedCount);
+          broadcastProgress(scannedCount); // No await - don't block scanning
           progressUpdateCounter = 0;
         }
       }
