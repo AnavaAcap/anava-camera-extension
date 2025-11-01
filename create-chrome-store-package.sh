@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Create submission package for Chrome Web Store (v2.0.8)
-VERSION="2.0.8"
+VERSION="2.0.9"
 ZIP_NAME="anava-local-connector-v${VERSION}.zip"
 
 echo "🎯 Creating Chrome Web Store submission package for v${VERSION}..."
