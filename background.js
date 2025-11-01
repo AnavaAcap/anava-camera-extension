@@ -827,20 +827,14 @@ async function getAcapDownloadUrl(architecture, osVersion) {
  * CRITICAL: Matches Electron installer's exact sequence (cameraConfigurationService.ts lines 1354-1726)
  */
 async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
-  // Input validation
+  // Input validation - check for required parameters only
+  // Let the camera/Axis SDK validate the actual format
   if (!cameraIp || !credentials || !licenseKey || !deviceId) {
     throw new Error('Missing required parameters for license activation');
   }
 
-  if (!licenseKey.match(/^[A-Z0-9]{16}$/)) {
-    throw new Error('Invalid license key format. Expected 16 alphanumeric characters.');
-  }
-
-  if (!deviceId.match(/^[A-Z0-9]{12}$/)) {
-    throw new Error('Invalid device ID format. Expected 12 character serial number.');
-  }
-
   console.log('[Background] Activating license for camera:', cameraIp);
+  console.log('[Background] License key length:', licenseKey.length, 'Device ID length:', deviceId.length);
 
   // First, check if the application is already licensed (Electron pattern)
   const checkResponse = await fetch('http://127.0.0.1:9876/proxy', {
