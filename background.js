@@ -303,10 +303,10 @@ async function handleScanNetwork(payload, sender) {
 
     // Helper to broadcast progress to web app (via content script relay)
     const broadcastProgress = async (scannedIPs) => {
-      if (sender && sender.origin) {
-        // Send to all content scripts - they'll relay to their pages
+      if (sender && sender.tab && sender.tab.id) {
+        // Send directly to the tab that initiated the scan (no tabs permission needed when we have sender.tab.id)
         try {
-          chrome.runtime.sendMessage({
+          const progressData = {
             type: 'scan_progress',
             data: {
               scannedIPs,
@@ -314,14 +314,24 @@ async function handleScanNetwork(payload, sender) {
               axisDevices: discoveredAxisDevices.length,
               cameras: discoveredCameras.length,
               percentComplete: (scannedIPs / totalIPs) * 100
-            },
-            targetOrigin: sender.origin
-          }).catch(() => {
-            // No content scripts listening - that's fine
-          });
+            }
+          };
+
+          // Debug: Log first few updates
+          if (scannedIPs <= 20 || scannedIPs === totalIPs) {
+            console.log(`[Background] Sending progress to tab ${sender.tab.id}:`, progressData.data);
+          }
+
+          await chrome.tabs.sendMessage(sender.tab.id, progressData);
         } catch (error) {
-          console.error('[Background] Failed to send progress:', error);
+          // Tab may have closed or content script not ready - ignore
+          if (!error.message.includes('No tab with id') &&
+              !error.message.includes('Receiving end does not exist')) {
+            console.error('[Background] Failed to send progress:', error.message);
+          }
         }
+      } else {
+        console.warn('[Background] Cannot send progress - no sender.tab.id available');
       }
     };
 

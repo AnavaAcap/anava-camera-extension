@@ -141,13 +141,11 @@
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "scan_progress") {
-        if (!message.targetOrigin || message.targetOrigin === window.location.origin) {
-          console.log("[Content Script] Relaying scan progress to page:", message.data);
-          window.postMessage({
-            type: "scan_progress",
-            data: message.data
-          }, window.location.origin);
-        }
+        console.log("[Content Script] Relaying scan progress to page:", message.data);
+        window.postMessage({
+          type: "scan_progress",
+          data: message.data
+        }, window.location.origin);
       } else if (message.type === "CAMERAS_DISCOVERED") {
         window.postMessage({
           type: "ANAVA_CONNECTOR_CAMERAS_DISCOVERED",
