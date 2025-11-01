@@ -10,13 +10,15 @@ const { execSync } = require('child_process');
 
 console.log('🔨 Building Anava Camera Extension...\n');
 
-// Ensure dist directory exists
-try {
-  fs.mkdirSync('dist', { recursive: true });
-} catch (e) {}
+// Backup source files to src/ before building to root
+const sourceFiles = [
+  'src/content-script.ts',
+  'popup-new.js',
+  'background.js'
+];
 
 async function build() {
-  // Step 1: Build icons
+  // Step 1: Build icons (outputs to root by default)
   console.log('1️⃣  Generating icons...');
   try {
     execSync('python3 build-icons.py', { stdio: 'inherit' });
@@ -26,16 +28,16 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 2: Build content script (TypeScript → JavaScript)
+  // Step 2: Build content script (TypeScript → JavaScript) to ROOT
   console.log('2️⃣  Building content script...');
   try {
     await esbuild.build({
       entryPoints: ['src/content-script.ts'],
       bundle: true,
-      outfile: 'dist/content-script.js',
+      outfile: 'content-script.js',  // Output to ROOT, not dist/
       platform: 'browser',
       target: 'es2020',
-      format: 'iife', // Immediately Invoked Function Expression for content scripts
+      format: 'iife',
       sourcemap: false,
       minify: false,
     });
@@ -45,13 +47,13 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 3: Build popup script (bundle with services)
+  // Step 3: Build popup script (bundle with services) to ROOT
   console.log('3️⃣  Building popup script...');
   try {
     await esbuild.build({
       entryPoints: ['popup-new.js'],
       bundle: true,
-      outfile: 'dist/popup.js',
+      outfile: 'popup.js',  // Output to ROOT, not dist/
       platform: 'browser',
       target: 'es2020',
       format: 'iife',
@@ -64,47 +66,54 @@ async function build() {
     process.exit(1);
   }
 
-  // Step 4: Copy background script (using root background.js, not TypeScript)
-  console.log('4️⃣  Copying background script...');
-  try {
-    fs.copyFileSync('background.js', 'dist/background.js');
-    console.log('✅ Background script copied\n');
-  } catch (error) {
-    console.error('❌ Copy failed:', error);
-    process.exit(1);
-  }
+  // Step 4: background.js already in root - no action needed
+  console.log('4️⃣  Background script already in root...');
+  console.log('✅ Background script ready\n');
 
-  // Step 5: Copy static files
-  console.log('5️⃣  Copying static files...');
-  const staticFiles = [
+  // Step 5: Verify all required files are in root
+  console.log('5️⃣  Verifying files in root...');
+  const requiredFiles = [
     'manifest.json',
+    'background.js',
+    'content-script.js',
     'popup.html',
+    'popup.js',
     'popup.css',
     'rules.json',
     'license-worker.html',
     'license-worker.js',
-    'axis-sdk.js'
+    'axis-sdk.js',
+    'icon16.png',
+    'icon48.png',
+    'icon128.png'
   ];
 
-  try {
-    for (const file of staticFiles) {
-      fs.copyFileSync(file, `dist/${file}`);
+  let allPresent = true;
+  for (const file of requiredFiles) {
+    if (fs.existsSync(file)) {
       console.log(`   ✓ ${file}`);
+    } else {
+      console.log(`   ✗ ${file} MISSING`);
+      allPresent = false;
     }
-    console.log('✅ Static files copied\n');
-  } catch (error) {
-    console.error('❌ Copy failed:', error.message);
+  }
+
+  if (!allPresent) {
+    console.error('\n❌ Some required files are missing!');
     process.exit(1);
   }
+
+  console.log('✅ All files verified\n');
 
   console.log('🎉 Build complete! Extension ready in ROOT directory\n');
   console.log('📦 Next steps:');
   console.log('   1. Go to chrome://extensions');
-  console.log('   2. Click "Load unpacked"');
-  console.log('   3. Select the ROOT directory (anava-camera-extension)');
-  console.log('   4. Copy the extension ID');
-  console.log('   5. Add to .env.local: VITE_EXTENSION_ID=<id>\n');
-  console.log('⚠️  NOTE: Load from ROOT, not from dist/ folder!');
+  console.log('   2. Enable "Developer mode"');
+  console.log('   3. Click "Load unpacked"');
+  console.log('   4. Select: /Users/ryanwager/anava-camera-extension');
+  console.log('   5. Copy the extension ID');
+  console.log('   6. Add to web app .env.local: VITE_EXTENSION_ID=<id>\n');
+  console.log('✅ Extension can now be loaded directly from root!');
 }
 
 build().catch(err => {

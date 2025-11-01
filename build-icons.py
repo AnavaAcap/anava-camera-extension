@@ -7,9 +7,6 @@ Resizes anava-favicon-source.png to required sizes
 from PIL import Image
 import os
 
-# Ensure dist directory exists
-os.makedirs('dist', exist_ok=True)
-
 FAVICON_SOURCE = 'anava-favicon-source.png'
 
 def create_icon_from_favicon(size, filename):
@@ -40,11 +37,11 @@ if __name__ == '__main__':
             exit(1)
         print(f"✓ Downloaded {FAVICON_SOURCE}")
 
-    # Create all three icon sizes from the favicon
+    # Create all three icon sizes from the favicon (output to ROOT)
     success = True
-    success = create_icon_from_favicon(16, 'dist/icon16.png') and success
-    success = create_icon_from_favicon(48, 'dist/icon48.png') and success
-    success = create_icon_from_favicon(128, 'dist/icon128.png') and success
+    success = create_icon_from_favicon(16, 'icon16.png') and success
+    success = create_icon_from_favicon(48, 'icon48.png') and success
+    success = create_icon_from_favicon(128, 'icon128.png') and success
 
     if success:
         print("✓ All icons created successfully from Anava favicon!")

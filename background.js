@@ -59,6 +59,24 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
         .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
 
+    case 'push_config_only':
+      handlePushConfigOnly(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'start_acap':
+      handleStartAcap(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'get_acap_status':
+      handleGetAcapStatus(message.payload)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
     default:
       sendResponse({ success: false, error: 'Unknown command: ' + message.command });
       return false;
@@ -949,9 +967,11 @@ async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
 
 /**
  * Step 3: Ensure ACAP application is running
+ * Enhanced with better polling and verification
  */
 async function ensureAcapRunning(cameraIp, credentials) {
   // Check current status
+  console.log('[Background] Checking current ACAP status...');
   const statusResponse = await fetch('http://127.0.0.1:9876/proxy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -976,12 +996,12 @@ async function ensureAcapRunning(cameraIp, credentials) {
                     statusText.includes('Status="Running"');
 
   if (isRunning) {
-    console.log('[Background] ACAP already running');
+    console.log('[Background] ✅ ACAP already running');
     return;
   }
 
   // Start ACAP
-  console.log('[Background] Starting ACAP...');
+  console.log('[Background] Starting ACAP application...');
   const startResponse = await fetch('http://127.0.0.1:9876/proxy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -998,10 +1018,18 @@ async function ensureAcapRunning(cameraIp, credentials) {
     throw new Error(`Failed to start ACAP: ${startResponse.status}`);
   }
 
-  // Retry verification (wait for app to start)
-  await sleep(3000);
+  console.log('[Background] Start command sent, waiting for ACAP to initialize...');
 
-  for (let i = 0; i < 2; i++) {
+  // Enhanced verification with more retries and longer wait times
+  // ACAP can take 10-15 seconds to fully start after license activation
+  const maxRetries = 5; // Up to 5 retries
+  const retryDelay = 3000; // 3 seconds between retries
+
+  for (let i = 0; i < maxRetries; i++) {
+    await sleep(retryDelay);
+
+    console.log(`[Background] Verification attempt ${i + 1}/${maxRetries}...`);
+
     const retryResponse = await fetch('http://127.0.0.1:9876/proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1014,18 +1042,25 @@ async function ensureAcapRunning(cameraIp, credentials) {
       })
     });
 
-    const retryData = await retryResponse.json();
-    const retryText = retryData.data?.text || '';
+    if (retryResponse.ok) {
+      const retryData = await retryResponse.json();
+      const retryText = retryData.data?.text || '';
 
-    if (retryText.includes('Status="Running"')) {
-      console.log('[Background] ACAP started successfully');
-      return;
+      if (retryText.includes('Name="BatonAnalytic"') && retryText.includes('Status="Running"')) {
+        console.log('[Background] ✅ ACAP started successfully');
+
+        // Additional wait to ensure ACAP is fully ready to accept configuration
+        console.log('[Background] Waiting 2 more seconds for ACAP to fully initialize...');
+        await sleep(2000);
+
+        return;
+      } else {
+        console.log(`[Background] ACAP not running yet (attempt ${i + 1}/${maxRetries})`);
+      }
     }
-
-    await sleep(3000);
   }
 
-  throw new Error('ACAP failed to start after retries');
+  throw new Error(`ACAP failed to start after ${maxRetries} attempts (${maxRetries * retryDelay / 1000}s). Please check camera logs and try manual push.`);
 }
 
 /**
@@ -1155,6 +1190,145 @@ async function handleGetFirmwareInfo(payload) {
   } catch (error) {
     throw new Error('Failed to get firmware info: ' + error.message);
   }
+}
+
+/**
+ * Push configuration only (assumes ACAP is already deployed and running)
+ *
+ * This command:
+ * 1. Verifies ACAP is running
+ * 2. Pushes configuration
+ * 3. Does NOT deploy or license ACAP
+ */
+async function handlePushConfigOnly(payload) {
+  const { cameraIp, credentials, config } = payload;
+  console.log('[Background] Push config only to:', cameraIp);
+
+  try {
+    // Verify proxy is ready
+    await ensureProxyReady();
+
+    // Step 1: Verify ACAP is running
+    console.log('[Background] Verifying ACAP is running...');
+    const status = await getAcapStatusInternal(cameraIp, credentials);
+
+    if (!status.installed) {
+      throw new Error('ACAP is not installed on this camera. Please run full deployment first.');
+    }
+
+    if (!status.licensed) {
+      throw new Error('ACAP is not licensed on this camera. Please activate license first.');
+    }
+
+    if (!status.running) {
+      console.log('[Background] ACAP is installed but not running. Starting it...');
+      await ensureAcapRunning(cameraIp, credentials);
+
+      // Wait for ACAP to fully start
+      await sleep(5000);
+
+      // Verify it started
+      const newStatus = await getAcapStatusInternal(cameraIp, credentials);
+      if (!newStatus.running) {
+        throw new Error('Failed to start ACAP. Please check camera logs.');
+      }
+    }
+
+    // Step 2: Push configuration
+    console.log('[Background] Pushing configuration...');
+    await pushConfiguration(cameraIp, credentials, config);
+    console.log('[Background] ✅ Configuration pushed successfully');
+
+    return {
+      success: true,
+      message: 'Configuration pushed successfully',
+      details: {
+        cameraIp,
+        acapStatus: 'running',
+        configPushed: true
+      }
+    };
+
+  } catch (error) {
+    console.error('[Background] ❌ Push config failed:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Start ACAP application (standalone command)
+ */
+async function handleStartAcap(payload) {
+  const { cameraIp, credentials } = payload;
+  console.log('[Background] Starting ACAP on:', cameraIp);
+
+  try {
+    await ensureProxyReady();
+    await ensureAcapRunning(cameraIp, credentials);
+
+    return {
+      success: true,
+      message: 'ACAP started successfully'
+    };
+
+  } catch (error) {
+    console.error('[Background] Failed to start ACAP:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Get ACAP status (standalone command)
+ */
+async function handleGetAcapStatus(payload) {
+  const { cameraIp, credentials } = payload;
+  console.log('[Background] Getting ACAP status for:', cameraIp);
+
+  try {
+    await ensureProxyReady();
+    const status = await getAcapStatusInternal(cameraIp, credentials);
+
+    return status;
+
+  } catch (error) {
+    console.error('[Background] Failed to get ACAP status:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Internal function to get ACAP status
+ */
+async function getAcapStatusInternal(cameraIp, credentials) {
+  const response = await fetch('http://127.0.0.1:9876/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `https://${cameraIp}/axis-cgi/applications/list.cgi`,
+      method: 'GET',
+      username: credentials.username,
+      password: credentials.password,
+      body: {}
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to get ACAP status: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const statusText = data.data?.text || '';
+
+  // Parse XML for BatonAnalytic status
+  const hasBatonAnalytic = statusText.includes('Name="BatonAnalytic"');
+  const isRunning = statusText.includes('Name="BatonAnalytic"') && statusText.includes('Status="Running"');
+  const isLicensed = statusText.includes('Name="BatonAnalytic"') && statusText.includes('License="Valid"');
+
+  return {
+    installed: hasBatonAnalytic,
+    running: isRunning,
+    licensed: isLicensed
+  };
 }
 
 /**
