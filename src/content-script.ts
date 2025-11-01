@@ -218,7 +218,7 @@ window.addEventListener('message', (event) => {
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'scan_progress') {
-      // Forward scan progress to page (for web app's progress UI)
+      // Background sends directly to this tab, relay to page
       console.log('[Content Script] Relaying scan progress to page:', message.data);
       window.postMessage({
         type: 'scan_progress',

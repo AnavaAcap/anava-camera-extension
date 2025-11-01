@@ -377,8 +377,8 @@
       this.PROXY_PORT = 9876;
       this.CHECK_INTERVAL = 1e4;
       // 10 seconds
-      this.HEALTH_TIMEOUT = 3e3;
-      // 3 seconds
+      this.HEALTH_TIMEOUT = 3e4;
+      // 30 seconds (generous for heavy scan load, but still catches crashes)
       this.MAX_CONSECUTIVE_FAILURES = 3;
       this.health = {
         isRunning: false,
@@ -440,7 +440,7 @@
             responseTime,
             consecutiveFailures: 0
           };
-          const status = responseTime > 1e3 ? "degraded" /* DEGRADED */ : "healthy" /* HEALTHY */;
+          const status = responseTime > 1e4 ? "degraded" /* DEGRADED */ : "healthy" /* HEALTHY */;
           this.notifyListeners(this.health, status);
           console.log(`[ProxyHealthMonitor] Health check passed (${responseTime}ms)`);
           return this.health;

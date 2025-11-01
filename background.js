@@ -287,88 +287,92 @@ async function handleScanNetwork(payload, sender) {
     const { baseIp, count } = parseCIDR(subnet);
     console.log(`[Background] Scanning ${count} IPs starting from ${baseIp}`);
 
-    // Generate IPs
+    // Generate ALL IPs to scan
     const ipsToScan = generateIpRange(baseIp, count);
-    console.log(`[Background] Generated ${ipsToScan.length} IPs to scan`);
-
-    // Scan in batches of 50 (fast but doesn't overwhelm proxy)
-    const batchSize = 50;
-    const discoveredCameras = [];
-    const discoveredAxisDevices = [];
     const totalIPs = ipsToScan.length;
-    const totalBatches = Math.ceil(totalIPs / batchSize);
+    console.log(`[Background] Generated ${totalIPs} IPs - sending bulk scan request to proxy`);
 
-    console.log(`[Background] Scanning ${totalIPs} IPs in ${totalBatches} batches of ${batchSize}...`);
+    // Send ONE request with ALL IPs to the proxy
+    const scanResponse = await fetch('http://127.0.0.1:9876/scan-network', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ips: ipsToScan,
+        username: credentials.username,
+        password: credentials.password
+      })
+    });
 
-    // Helper to broadcast progress to web app (if it's an external message)
-    const broadcastProgress = async (scannedIPs) => {
-      if (sender && sender.origin) {
-        // External message from web app - send progress back via tabs
-        try {
-          const tabs = await chrome.tabs.query({ url: sender.origin + '/*' });
-          console.log(`[Background] Broadcasting progress to ${tabs.length} tabs:`, {
-            scannedIPs,
-            totalIPs,
-            cameras: discoveredCameras.length
-          });
-
-          if (tabs && tabs.length > 0) {
-            for (const tab of tabs) {
-              if (tab && tab.id) {
-                try {
-                  await chrome.tabs.sendMessage(tab.id, {
-                    type: 'scan_progress',
-                    data: {
-                      scannedIPs,
-                      totalIPs,
-                      axisDevices: discoveredAxisDevices.length,
-                      cameras: discoveredCameras.length,
-                      percentComplete: (scannedIPs / totalIPs) * 100
-                    }
-                  });
-                } catch (err) {
-                  // Silently ignore - tab may have closed or content script not injected yet
-                  console.log(`[Background] Failed to send to tab ${tab.id}:`, err.message);
-                }
-              }
-            }
-          } else {
-            console.warn('[Background] No tabs found for origin:', sender.origin);
-          }
-        } catch (error) {
-          console.error('[Background] Failed to query tabs:', error);
-        }
-      }
-    };
-
-    for (let i = 0; i < ipsToScan.length; i += batchSize) {
-      const batch = ipsToScan.slice(i, i + batchSize);
-      const batchNum = Math.floor(i / batchSize) + 1;
-      console.log(`[Background] Scanning batch ${batchNum}/${totalBatches} (${batch.length} IPs)...`);
-
-      const batchPromises = batch.map(ip => checkCamera(ip, credentials));
-      const batchResults = await Promise.all(batchPromises);
-
-      batchResults.forEach(camera => {
-        if (camera) {
-          discoveredAxisDevices.push(camera);
-          if (camera.deviceType === 'camera') {
-            discoveredCameras.push(camera);
-          }
-        }
-      });
-
-      // Broadcast progress after each batch
-      await broadcastProgress(i + batch.length);
-
-      console.log(`[Background] Batch ${batchNum} complete. Found ${discoveredCameras.length} cameras so far.`);
+    if (!scanResponse.ok) {
+      throw new Error(`Proxy returned ${scanResponse.status}: ${await scanResponse.text()}`);
     }
 
-    // Final progress update
-    await broadcastProgress(totalIPs);
+    const { scan_id } = await scanResponse.json();
+    console.log(`[Background] Scan started: ${scan_id}`);
 
-    console.log(`[Background] Scan complete. Found ${discoveredCameras.length} cameras total.`);
-    return { cameras: discoveredCameras };
+    // Connect WebSocket for real-time progress
+    const ws = new WebSocket(`ws://127.0.0.1:9876/scan-results?scan_id=${scan_id}`);
+    const discoveredCameras = [];
+
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => {
+        console.log('[Background] WebSocket connected for scan progress');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const progress = JSON.parse(event.data);
+
+          // If camera found, add to list
+          if (progress.camera) {
+            discoveredCameras.push(progress.camera);
+            console.log(`[Background] Found camera: ${progress.camera.ip} - ${progress.camera.model}`);
+          }
+
+          // Broadcast progress to web app
+          if (sender && sender.tab && sender.tab.id) {
+            chrome.tabs.sendMessage(sender.tab.id, {
+              type: 'scan_progress',
+              data: {
+                scannedIPs: progress.scanned_count,
+                totalIPs: progress.total_ips,
+                cameras: progress.cameras_found,
+                percentComplete: progress.percent_done
+              }
+            }).catch(() => {
+              // Tab closed - ignore
+            });
+          }
+
+          // Check if scan complete
+          if (progress.is_complete) {
+            console.log(`[Background] Scan complete. Found ${discoveredCameras.length} cameras`);
+            ws.close();
+            resolve({ cameras: discoveredCameras });
+          }
+        } catch (error) {
+          console.error('[Background] Error processing progress:', error);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('[Background] WebSocket error:', error);
+        reject(new Error('WebSocket connection failed'));
+      };
+
+      ws.onclose = () => {
+        console.log('[Background] WebSocket closed');
+      };
+
+      // Timeout after 5 minutes (safety)
+      setTimeout(() => {
+        if (ws.readyState !== WebSocket.CLOSED) {
+          ws.close();
+          reject(new Error('Scan timeout after 5 minutes'));
+        }
+      }, 5 * 60 * 1000);
+    });
+
   } catch (error) {
     console.error('[Background] Network scan error:', error);
     throw new Error(`Network scan failed: ${error.message}`);
@@ -432,8 +436,11 @@ async function checkCamera(ip, credentials) {
       deviceType: 'camera'
     };
   } catch (error) {
-    // Log first few errors to see what's failing
-    if (Math.random() < 0.01) { // Log 1% of errors
+    // Timeouts are expected (most IPs won't have cameras) - don't log them
+    // Only log unexpected errors (not timeout/abort)
+    if (!error.message.includes('timed out') &&
+        !error.message.includes('aborted') &&
+        Math.random() < 0.01) { // Log 1% of non-timeout errors
       console.error(`[Background] ${ip} error:`, error.message);
     }
     return null;
@@ -844,20 +851,14 @@ async function getAcapDownloadUrl(architecture, osVersion) {
  * CRITICAL: Matches Electron installer's exact sequence (cameraConfigurationService.ts lines 1354-1726)
  */
 async function activateLicense(cameraIp, credentials, licenseKey, deviceId) {
-  // Input validation
+  // Input validation - check for required parameters only
+  // Let the camera/Axis SDK validate the actual format
   if (!cameraIp || !credentials || !licenseKey || !deviceId) {
     throw new Error('Missing required parameters for license activation');
   }
 
-  if (!licenseKey.match(/^[A-Z0-9]{16}$/)) {
-    throw new Error('Invalid license key format. Expected 16 alphanumeric characters.');
-  }
-
-  if (!deviceId.match(/^[A-Z0-9]{12}$/)) {
-    throw new Error('Invalid device ID format. Expected 12 character serial number.');
-  }
-
   console.log('[Background] Activating license for camera:', cameraIp);
+  console.log('[Background] License key length:', licenseKey.length, 'Device ID length:', deviceId.length);
 
   // First, check if the application is already licensed (Electron pattern)
   const checkResponse = await fetch('http://127.0.0.1:9876/proxy', {

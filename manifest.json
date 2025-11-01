@@ -1,12 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Anava Local Connector",
-  "version": "2.0.7",
+  "version": "2.1.0",
   "description": "Connect to local network cameras from your browser. Requires companion app installation.",
   "permissions": [
-    "nativeMessaging",
     "storage",
-    "tabs",
     "offscreen"
   ],
   "host_permissions": [
@@ -14,9 +12,7 @@
     "http://127.0.0.1:9876/*",
     "https://anava-ai.web.app/*",
     "https://anava-ai.firebaseapp.com/*",
-    "https://*.anava.cloud/*",
-    "https://api.github.com/*",
-    "https://github.com/*"
+    "https://*.anava.cloud/*"
   ],
   "content_scripts": [
     {

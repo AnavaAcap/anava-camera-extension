@@ -33,7 +33,7 @@ class ProxyHealthMonitorClass {
   private readonly PROXY_URL = 'http://127.0.0.1:9876';
   private readonly PROXY_PORT = 9876;
   private readonly CHECK_INTERVAL = 10000; // 10 seconds
-  private readonly HEALTH_TIMEOUT = 3000; // 3 seconds
+  private readonly HEALTH_TIMEOUT = 30000; // 30 seconds (generous for heavy scan load, but still catches crashes)
   private readonly MAX_CONSECUTIVE_FAILURES = 3;
 
   private health: ProxyHealth = {
@@ -116,7 +116,9 @@ class ProxyHealthMonitorClass {
           consecutiveFailures: 0
         };
 
-        const status = responseTime > 1000 ? ProxyStatus.DEGRADED : ProxyStatus.HEALTHY;
+        // More generous degraded threshold - proxy can be slow during heavy scans
+        // Only show yellow if response > 10s, red if timeout (30s) or no response
+        const status = responseTime > 10000 ? ProxyStatus.DEGRADED : ProxyStatus.HEALTHY;
         this.notifyListeners(this.health, status);
 
         console.log(`[ProxyHealthMonitor] Health check passed (${responseTime}ms)`);

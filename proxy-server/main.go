@@ -383,6 +383,8 @@ func main() {
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/upload-acap", handleUploadAcap)
 	http.HandleFunc("/upload-license", handleUploadLicense)
+	http.HandleFunc("/scan-network", handleScanNetwork)      // NEW: Bulk scan API
+	http.HandleFunc("/scan-results", handleScanResults)      // NEW: WebSocket progress
 
 	port := "9876"
 	addr := "127.0.0.1:" + port
@@ -390,6 +392,7 @@ func main() {
 	logger.Printf("Starting proxy server on %s", addr)
 	fmt.Printf("Camera Proxy Server listening on http://%s\n", addr)
 	fmt.Println("This server bypasses Chrome's local network sandbox restrictions")
+	fmt.Println("New: /scan-network endpoint for bulk scanning with WebSocket progress")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		logger.Fatalf("Server failed to start: %v", err)
