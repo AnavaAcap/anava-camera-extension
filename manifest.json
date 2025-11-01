@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Anava Local Connector",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "description": "Connect to local network cameras from your browser. Requires companion app installation.",
   "permissions": [
     "storage",
