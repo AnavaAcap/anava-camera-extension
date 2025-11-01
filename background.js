@@ -300,43 +300,26 @@ async function handleScanNetwork(payload, sender) {
 
     console.log(`[Background] Scanning ${totalIPs} IPs in ${totalBatches} batches of ${batchSize}...`);
 
-    // Helper to broadcast progress to web app (if it's an external message)
+    // Helper to broadcast progress to web app (via content script relay)
     const broadcastProgress = async (scannedIPs) => {
       if (sender && sender.origin) {
-        // External message from web app - send progress back via tabs
+        // Send to all content scripts - they'll relay to their pages
         try {
-          const tabs = await chrome.tabs.query({ url: sender.origin + '/*' });
-          console.log(`[Background] Broadcasting progress to ${tabs.length} tabs:`, {
-            scannedIPs,
-            totalIPs,
-            cameras: discoveredCameras.length
+          chrome.runtime.sendMessage({
+            type: 'scan_progress',
+            data: {
+              scannedIPs,
+              totalIPs,
+              axisDevices: discoveredAxisDevices.length,
+              cameras: discoveredCameras.length,
+              percentComplete: (scannedIPs / totalIPs) * 100
+            },
+            targetOrigin: sender.origin
+          }).catch(() => {
+            // No content scripts listening - that's fine
           });
-
-          if (tabs && tabs.length > 0) {
-            for (const tab of tabs) {
-              if (tab && tab.id) {
-                try {
-                  await chrome.tabs.sendMessage(tab.id, {
-                    type: 'scan_progress',
-                    data: {
-                      scannedIPs,
-                      totalIPs,
-                      axisDevices: discoveredAxisDevices.length,
-                      cameras: discoveredCameras.length,
-                      percentComplete: (scannedIPs / totalIPs) * 100
-                    }
-                  });
-                } catch (err) {
-                  // Silently ignore - tab may have closed or content script not injected yet
-                  console.log(`[Background] Failed to send to tab ${tab.id}:`, err.message);
-                }
-              }
-            }
-          } else {
-            console.warn('[Background] No tabs found for origin:', sender.origin);
-          }
         } catch (error) {
-          console.error('[Background] Failed to query tabs:', error);
+          console.error('[Background] Failed to send progress:', error);
         }
       }
     };

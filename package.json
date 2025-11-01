@@ -1,6 +1,6 @@
 {
   "name": "anava-camera-extension",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "description": "Discover Axis cameras on local network and deploy ACAP applications",
   "scripts": {
     "build": "node build.js",

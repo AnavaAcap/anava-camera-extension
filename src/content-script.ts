@@ -218,12 +218,14 @@ window.addEventListener('message', (event) => {
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'scan_progress') {
-      // Forward scan progress to page (for web app's progress UI)
-      console.log('[Content Script] Relaying scan progress to page:', message.data);
-      window.postMessage({
-        type: 'scan_progress',
-        data: message.data
-      }, window.location.origin);
+      // Only relay if targetOrigin matches our current origin (or if no targetOrigin specified)
+      if (!message.targetOrigin || message.targetOrigin === window.location.origin) {
+        console.log('[Content Script] Relaying scan progress to page:', message.data);
+        window.postMessage({
+          type: 'scan_progress',
+          data: message.data
+        }, window.location.origin);
+      }
     } else if (message.type === 'CAMERAS_DISCOVERED') {
       // Forward camera discovery results to page
       window.postMessage({
