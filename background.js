@@ -292,7 +292,8 @@ async function handleScanNetwork(payload, sender) {
     console.log(`[Background] Generated ${ipsToScan.length} IPs to scan`);
 
     // Worker pool pattern: maintain consistent concurrent load instead of batches
-    const MAX_CONCURRENT = 40; // Optimized for speed while keeping proxy responsive
+    // CRITICAL: Lower concurrency to prevent overwhelming single-threaded proxy
+    const MAX_CONCURRENT = 15; // Conservative to keep proxy responsive to health checks
     const discoveredCameras = [];
     const discoveredAxisDevices = [];
     const totalIPs = ipsToScan.length;
