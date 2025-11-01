@@ -291,14 +291,15 @@ async function handleScanNetwork(payload, sender) {
     const ipsToScan = generateIpRange(baseIp, count);
     console.log(`[Background] Generated ${ipsToScan.length} IPs to scan`);
 
-    // Scan in batches of 50 (fast but doesn't overwhelm proxy)
-    const batchSize = 50;
+    // Worker pool pattern: maintain consistent concurrent load instead of batches
+    const MAX_CONCURRENT = 20; // Smooth load on proxy (was 50 at once)
     const discoveredCameras = [];
     const discoveredAxisDevices = [];
     const totalIPs = ipsToScan.length;
-    const totalBatches = Math.ceil(totalIPs / batchSize);
+    let scannedCount = 0;
+    let progressUpdateCounter = 0;
 
-    console.log(`[Background] Scanning ${totalIPs} IPs in ${totalBatches} batches of ${batchSize}...`);
+    console.log(`[Background] Scanning ${totalIPs} IPs with ${MAX_CONCURRENT} concurrent workers...`);
 
     // Helper to broadcast progress to web app (via content script relay)
     const broadcastProgress = async (scannedIPs) => {
@@ -324,28 +325,41 @@ async function handleScanNetwork(payload, sender) {
       }
     };
 
-    for (let i = 0; i < ipsToScan.length; i += batchSize) {
-      const batch = ipsToScan.slice(i, i + batchSize);
-      const batchNum = Math.floor(i / batchSize) + 1;
-      console.log(`[Background] Scanning batch ${batchNum}/${totalBatches} (${batch.length} IPs)...`);
+    // Worker pool: process IPs with consistent concurrency
+    let ipIndex = 0;
+    const workers = [];
 
-      const batchPromises = batch.map(ip => checkCamera(ip, credentials));
-      const batchResults = await Promise.all(batchPromises);
+    // Create worker function that processes IPs sequentially
+    const worker = async () => {
+      while (ipIndex < ipsToScan.length) {
+        const ip = ipsToScan[ipIndex++];
 
-      batchResults.forEach(camera => {
+        const camera = await checkCamera(ip, credentials);
         if (camera) {
           discoveredAxisDevices.push(camera);
           if (camera.deviceType === 'camera') {
             discoveredCameras.push(camera);
           }
         }
-      });
 
-      // Broadcast progress after each batch
-      await broadcastProgress(i + batch.length);
+        scannedCount++;
 
-      console.log(`[Background] Batch ${batchNum} complete. Found ${discoveredCameras.length} cameras so far.`);
+        // Broadcast progress every 10 IPs (reduce message spam)
+        progressUpdateCounter++;
+        if (progressUpdateCounter >= 10 || scannedCount === totalIPs) {
+          await broadcastProgress(scannedCount);
+          progressUpdateCounter = 0;
+        }
+      }
+    };
+
+    // Start MAX_CONCURRENT workers
+    for (let i = 0; i < Math.min(MAX_CONCURRENT, totalIPs); i++) {
+      workers.push(worker());
     }
+
+    // Wait for all workers to complete
+    await Promise.all(workers);
 
     // Final progress update
     await broadcastProgress(totalIPs);

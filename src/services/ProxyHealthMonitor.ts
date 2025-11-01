@@ -33,7 +33,7 @@ class ProxyHealthMonitorClass {
   private readonly PROXY_URL = 'http://127.0.0.1:9876';
   private readonly PROXY_PORT = 9876;
   private readonly CHECK_INTERVAL = 10000; // 10 seconds
-  private readonly HEALTH_TIMEOUT = 3000; // 3 seconds
+  private readonly HEALTH_TIMEOUT = 10000; // 10 seconds (longer to handle busy proxy during scans)
   private readonly MAX_CONSECUTIVE_FAILURES = 3;
 
   private health: ProxyHealth = {

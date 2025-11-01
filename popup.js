@@ -377,8 +377,8 @@
       this.PROXY_PORT = 9876;
       this.CHECK_INTERVAL = 1e4;
       // 10 seconds
-      this.HEALTH_TIMEOUT = 3e3;
-      // 3 seconds
+      this.HEALTH_TIMEOUT = 1e4;
+      // 10 seconds (longer to handle busy proxy during scans)
       this.MAX_CONSECUTIVE_FAILURES = 3;
       this.health = {
         isRunning: false,
